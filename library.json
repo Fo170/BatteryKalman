@@ -1,0 +1,37 @@
+{
+  "name": "BatteryKalman",
+  "version": "1.0.0",
+  "description": "Algorithme de filtrage de Kalman adaptatif multi-phases pour estimation de capacité et état de charge de batteries",
+  "keywords": [
+    "kalman",
+    "battery",
+    "soc",
+    "coulomb-counter",
+    "state-of-charge",
+    "adaptive-filter",
+    "learning",
+    "capacity-estimation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Fo170/BatteryKalman.git"
+  },
+  "authors": [
+    {
+      "name": "Fo170",
+      "url": "https://github.com/Fo170",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "frameworks": "arduino",
+  "platforms": [
+    "espressif8266",
+    "espressif32",
+    "atmelsam",
+    "teensy",
+    "ststm32",
+    "raspberrypi",
+    "atmelavr"
+  ],
+  "headers": "BatteryKalman.h",
