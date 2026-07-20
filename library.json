@@ -34,5 +34,5 @@
     "raspberrypi",
     "atmelavr"
   ],
-  "headers": "BatteryKalman.h",
+  "headers": "BatteryKalman.h"
 }
