@@ -1,6 +1,6 @@
 {
   "name": "BatteryKalman",
-  "version": "1.0.0",
+  "version": "1.2.1",
   "description": "Algorithme de filtrage de Kalman adaptatif multi-phases pour estimation de capacité et état de charge de batteries",
   "keywords": [
     "kalman",
