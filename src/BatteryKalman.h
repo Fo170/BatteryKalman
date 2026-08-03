@@ -10,9 +10,27 @@
  * - Confiance continue (pas de phases discrètes)
  * - Hysteresis sur transitions
  *
+ * v1.5.2 — CORRECTIONS DE BUGS (voir CHANGELOG en fin de fichier):
+ * - F1: transition d'état MPPT correctement détectée (mppt_state_prev différé)
+ * - F2: fermeture de segment mesurée AVANT reset coulomb (ordre update())
+ * - F3: R adaptatif réellement appliqué (R_measured mis à jour)
+ * - F4: EKF 2D complet (prediction aging + mise à jour dC_dCycle et P[1][1])
+ * - F5: fermeture REST_LONG par transition (plus de seuil n>200 bloquant)
+ * - F6: apprentissage Kalman indépendant de isAutoDetect()
+ * - F7: (BatteryModels.h) ordre des tests detectChargeState corrigé
+ *
+ * v1.5.3 — F8: porte de stabilité REST (OCV fiable)
+ * - Le point de référence REST_LONG ne dépend plus d'un délai fixe de 2h.
+ *   REST_LONG est atteint quand: repos >= REST_LONG_MIN_MS ET tension stable
+ *   (écart crête < REST_LONG_STABLE_MV) sur une fenêtre temporelle
+ *   REST_LONG_STABLE_MS (indépendant du rythme d'échantillonnage).
+ * - Réglages via constantes: REST_LONG_MIN_MS (15 min), REST_LONG_STABLE_MV,
+ *   REST_LONG_STABLE_MS, REST_LONG_STABLE_MIN_SAMPLES,
+ *   REST_LONG_STABLE_MAX_SAMPLES, REST_LONG_SYNC_MS.
+ *
  * Licence: GNU General Public License v3
- * Version: 1.5
- * Date: Juillet 2026
+ * Version: 1.5.3
+ * Date: Août 2026
  */
 
 #ifndef BATTERY_KALMAN_H
@@ -96,6 +114,36 @@
 #endif
 
 // ============================================================
+// REFÉRENCE "REPOS" (OCV fiable) — F8 v1.5.3
+// ============================================================
+// Le point de référence REST_LONG n'est plus un simple délai fixe de 2h
+// (inatteignable sur de nombreuses installations: il faut que la batterie
+// soit réellement stabilisée). On utilise une PORTE DE STABILITÉ temporelle :
+//   REST_LONG est atteint quand on est en REST depuis REST_LONG_MIN_MS
+//   ET que la tension est stable (écart crête max < REST_LONG_STABLE_MV)
+//   sur une fenêtre glissante de REST_LONG_STABLE_MS.
+// Indépendant du rythme d'échantillonnage (10 Hz, 1 Hz, 5 min...).
+
+#ifndef REST_LONG_MIN_MS
+#define REST_LONG_MIN_MS        900000UL    // 15 min min de repos avant référence OCV
+#endif
+#ifndef REST_LONG_STABLE_MV
+#define REST_LONG_STABLE_MV     0.020f      // écart tension crête (V) toléré sur la fenêtre
+#endif
+#ifndef REST_LONG_STABLE_MS
+#define REST_LONG_STABLE_MS     1800000UL   // fenêtre temporelle de stabilité (30 min)
+#endif
+#ifndef REST_LONG_STABLE_MIN_SAMPLES
+#define REST_LONG_STABLE_MIN_SAMPLES 6      // nb min d'échantillons dans la fenêtre
+#endif
+#ifndef REST_LONG_STABLE_MAX_SAMPLES
+#define REST_LONG_STABLE_MAX_SAMPLES 32     // taille max de l'anneau (sécurité mémoire)
+#endif
+#ifndef REST_LONG_SYNC_MS
+#define REST_LONG_SYNC_MS       1800000UL   // délai entre 2 synchros REST_LONG
+#endif
+
+// ============================================================
 // PHASES D'APPRENTISSAGE (Legacy - pour compatibilité)
 // ============================================================
 enum LearningPhase : uint8_t {
@@ -148,7 +196,7 @@ struct KalmanState2D {
 
     // Estimation en ligne de R
     float    R_estimated = R_INIT;      // R estimé depuis innovations
-    float    R_measured = R_INIT;       // R actuel pour mesure
+    float    R_measured = R_INIT;       // R actuel pour mesure (F3: désormais mis à jour)
 
     uint16_t n_updates = 0;             // Nombre mises à jour
     bool     initialized = false;
@@ -175,6 +223,11 @@ private:
     ChargeState mppt_state = State_UNKNOWN;
     ChargeState mppt_state_prev = State_UNKNOWN;
     uint32_t  state_entry_ms = 0;
+    // F8: suivi de stabilité de tension pour la détection REST_LONG
+    float     rest_v_ring[REST_LONG_STABLE_MAX_SAMPLES] = {0.0f};
+    uint32_t  rest_v_ring_ms[REST_LONG_STABLE_MAX_SAMPLES] = {0};
+    uint8_t   rest_v_count = 0;
+    bool      rest_stable = false;
     float     dVdt = 0.0f;
     float     V_prev = 0.0f;
     float     I_prev = 0.0f;
@@ -221,21 +274,40 @@ private:
 
     void predictKalman(float delta_cycles) {
         if (!kalman->initialized) return;
+        if (delta_cycles < 0.0f) delta_cycles = 0.0f;
 
-        // Prédiction temporelle: croissance de P due au process noise Q
-        // C_new = C_old - dC_dCycle * delta_cycles  (aucun changement, mais P grandit)
+        // --- F4 CORRECTION: prediction d'état avec vieillissement ---
+        // C_new = C_old - dC_dCycle * delta_cycles
+        kalman->C_hat -= kalman->dC_dCycle * delta_cycles;
 
-        // Calcul Q (process noise covariance)
-        float Q_C = Q_AGING_UNCERTAINTY * delta_cycles;  // Incertitude aging
-        float Q_aging = Q_AGING_UNCERTAINTY;              // Incertitude taux
+        // Jacobien de transition F = [[1, -delta_cycles], [0, 1]]
+        // P = F * P * F^T
+        float F01 = -delta_cycles;
+        float P00 = kalman->P[0][0];
+        float P01 = kalman->P[0][1];
+        float P10 = kalman->P[1][0];
+        float P11 = kalman->P[1][1];
 
-        // P = P + Q  (Croissance de variance)
-        kalman->P[0][0] += Q_C;
-        kalman->P[1][1] += Q_aging;
+        // F * P
+        float FP00 = P00 + F01 * P10;
+        float FP01 = P01 + F01 * P11;
+        float FP10 = P10;
+        float FP11 = P11;
 
-        // Capper P pour éviter divergence
-        kalman->P[0][0] = min(kalman->P[0][0], KALMAN_P_INIT_C);
-        kalman->P[1][1] = min(kalman->P[1][1], KALMAN_P_INIT_AGING);
+        // (F * P) * F^T
+        float P00_new = FP00 + FP01 * F01;
+        float P01_new = FP01;
+        float P10_new = FP10 + FP11 * F01;
+        float P11_new = FP11;
+
+        // Process noise Q
+        float Q_C = Q_AGING_UNCERTAINTY * delta_cycles + Q_CAPACITY_DRIFT;
+        float Q_aging = Q_AGING_UNCERTAINTY;
+
+        kalman->P[0][0] = min(P00_new + Q_C, KALMAN_P_INIT_C);
+        kalman->P[0][1] = P01_new;
+        kalman->P[1][0] = P10_new;
+        kalman->P[1][1] = min(P11_new + Q_aging, KALMAN_P_INIT_AGING);
     }
 
     void applyKalmanUpdate2D(float C_measured, float R, float delta_cycles) {
@@ -252,7 +324,7 @@ private:
             return;
         }
 
-        // Prédiction (grow P due to process noise)
+        // Prédiction (grow P due to process noise + aging)
         predictKalman(delta_cycles);
 
         // Calcul innovation (résidu)
@@ -294,22 +366,25 @@ private:
 
         kalman->outlier_streak = 0;
 
-        // Kalman gain K = P*H' / S  où H = [1, 0]
-        // K = [P_CC / S, P_aging_C / S]'
+        // --- F4 CORRECTION: gain complet 2D ---
+        // K = P*H' / S  où H = [1, 0]
         float K_C = kalman->P[0][0] / S;
-        float K_aging = 0.0f;  // H' = [1; 0], donc K_aging = 0
+        float K_aging = kalman->P[1][0] / S;
 
         // State update: x = x + K * innovation
         kalman->C_hat += K_C * innovation;
+        kalman->dC_dCycle += K_aging * innovation;
 
         // Covariance update: P = (I - K*H) * P
         float P_CC_new = (1.0f - K_C) * kalman->P[0][0];
-        float P_aging_C_new = (1.0f - K_C) * kalman->P[0][1];
+        float P_Ca_new = (1.0f - K_C) * kalman->P[0][1];
+        float P_aC_new = kalman->P[1][0] - K_aging * kalman->P[0][0];
+        float P_aa_new = kalman->P[1][1] - K_aging * kalman->P[0][1];
 
-        // Clamping
         kalman->P[0][0] = max(KALMAN_P_MIN_C, P_CC_new);
-        kalman->P[0][1] = P_aging_C_new;
-        kalman->P[1][0] = P_aging_C_new;
+        kalman->P[0][1] = P_Ca_new;
+        kalman->P[1][0] = P_aC_new;
+        kalman->P[1][1] = max(KALMAN_P_MIN_AGING, P_aa_new);
 
         kalman->n_updates++;
 
@@ -347,6 +422,9 @@ private:
                                   (1.0f - R_SMOOTH_ALPHA) * kalman->R_estimated;
             kalman->R_estimated = constrain(kalman->R_estimated, R_MIN, R_MAX);
 
+            // --- F3 CORRECTION: appliquer R adaptatif aux futures mesures ---
+            kalman->R_measured = kalman->R_estimated;
+
             // Reset for next window
             kalman->innovation_sum_sq = 0.0f;
             kalman->innovation_count = 0;
@@ -380,27 +458,64 @@ private:
         float C_ref = getEffectiveCapacity();
         mppt_state = model->detectChargeState(V, I, C_ref);
 
+        // --- F1 CORRECTION: mppt_state_prev n'est PLUS mis à jour ici ---
+        // Il ne reflète plus la transition de ce même échantillon. La détection
+        // de transition (FLOAT/REST_LONG) dans handleSyncEvents,
+        // updateSegmentAndKalman et updateCycleDetection devient possible.
+        // mppt_state_prev sera mis à jour en FIN de update().
         if (mppt_state != mppt_state_prev) {
-            mppt_state_prev = mppt_state;
             state_entry_ms = millis();
         }
 
-        if (mppt_state == State_REST && millis() - state_entry_ms >= 7200000UL) {
-            mppt_state = State_REST_LONG;
+        // --- F8: porte de stabilité pour REST -> REST_LONG ---
+        // On alimente un anneau (temps, tension); REST_LONG n'est atteint
+        // que si (a) repos >= REST_LONG_MIN_MS, et (b) tension stable sur la
+        // fenêtre temporelle REST_LONG_STABLE_MS (écart crête < STABLE_MV).
+        if (mppt_state == State_REST) {
+            rest_v_ring[rest_v_count % REST_LONG_STABLE_MAX_SAMPLES] = V;
+            rest_v_ring_ms[rest_v_count % REST_LONG_STABLE_MAX_SAMPLES] = millis();
+            if (rest_v_count < 255) rest_v_count++;
+            if (rest_v_count > REST_LONG_STABLE_MAX_SAMPLES) rest_v_count = REST_LONG_STABLE_MAX_SAMPLES;
+
+            // Conserver uniquement les échantillons dans la fenêtre temporelle
+            // et calculer l'écart crête (ptp) sur ceux-ci.
+            uint32_t cutoff = millis() - REST_LONG_STABLE_MS;
+            float v_min = 9999.0f, v_max = -9999.0f;
+            uint8_t kept = 0;
+            for (uint8_t i = 0; i < REST_LONG_STABLE_MAX_SAMPLES; i++) {
+                if (rest_v_ring_ms[i] == 0) continue;
+                if (rest_v_ring_ms[i] < cutoff) { rest_v_ring_ms[i] = 0; continue; }
+                v_min = min(v_min, rest_v_ring[i]);
+                v_max = max(v_max, rest_v_ring[i]);
+                kept++;
+            }
+            bool time_ok = (millis() - state_entry_ms >= REST_LONG_MIN_MS);
+            bool stable_ok = (kept >= REST_LONG_STABLE_MIN_SAMPLES)
+                          && (v_max - v_min <= REST_LONG_STABLE_MV);
+            rest_stable = stable_ok;
+
+            if (time_ok && stable_ok) {
+                mppt_state = State_REST_LONG;
+            }
+        } else {
+            rest_v_count = 0;
+            for (uint8_t i = 0; i < REST_LONG_STABLE_MAX_SAMPLES; i++) rest_v_ring_ms[i] = 0;
+            rest_stable = false;
         }
     }
 
     void handleSyncEvents(float V_cell_ocv) {
         float total_ocv = V_cell_ocv * model->getCellCount();
 
+        // F1: ces transitions sont maintenant réellement détectées
         if (mppt_state == State_FLOAT && mppt_state_prev != State_FLOAT) {
             doSync(100.0f, 0.95f, "Float charge");
             return;
         }
 
-        if (mppt_state == State_REST_LONG && millis() - data->last_sync_time > 1800000UL) {
-            uint32_t extra = millis() - state_entry_ms - 7200000UL;
-            float conf = 0.70f + 0.15f * min(1.0f, extra / 7200000.0f);
+        if (mppt_state == State_REST_LONG && millis() - data->last_sync_time > REST_LONG_SYNC_MS) {
+            uint32_t extra = millis() - state_entry_ms - REST_LONG_MIN_MS;
+            float conf = 0.70f + 0.15f * min(1.0f, extra / (float)REST_LONG_MIN_MS);
             doSync(data->SoC_voltage, conf, "Long rest OCV");
             return;
         }
@@ -514,12 +629,14 @@ private:
         float conf_end = 0.0f;
         bool close = false;
 
+        // F1: transitions détectées (plus de code mort)
         if (mppt_state == State_FLOAT && mppt_state_prev != State_FLOAT) {
             SoC_end = 100.0f; conf_end = 0.95f; close = true;
-        } else if (mppt_state == State_REST_LONG && seg.n > 200) {
-            uint32_t extra = millis() - state_entry_ms - 7200000UL;
+        } else if (mppt_state == State_REST_LONG && mppt_state_prev != State_REST_LONG) {
+            // F5 + F8: fermeture par transition REST_LONG (porte de stabilité)
+            uint32_t extra = millis() - state_entry_ms - REST_LONG_MIN_MS;
             SoC_end = data->SoC_voltage;
-            conf_end = 0.70f + 0.15f * min(1.0f, extra / 7200000.0f);
+            conf_end = 0.70f + 0.15f * min(1.0f, extra / (float)REST_LONG_MIN_MS);
             close = true;
         }
 
@@ -544,7 +661,7 @@ private:
             return;
         }
 
-        // Utiliser R estimé en ligne
+        // F3: R adaptatif réellement utilisé
         float R = kalman->R_measured;
 
         // EKF 2D update
@@ -577,6 +694,8 @@ public:
         updatePhaseFromConfidence();
         state_entry_ms = millis();
         last_cycles = data->cycles_partial;
+        // F1: garantir un état "précédent" cohérent au démarrage
+        mppt_state_prev = mppt_state;
     }
 
     // ============================================================
@@ -613,19 +732,23 @@ public:
             data->SoC_coulomb = constrain(data->SoC_coulomb, 0.0f, 100.0f);
         }
 
+        // F6: apprentissage Kalman TOUJOURS actif (indépendant de isAutoDetect)
+        {
+            float delta_cycles = data->cycles_partial - last_cycles;
+            updateSegmentAndKalman(I, delta_cycles);
+            last_cycles = data->cycles_partial;
+        }
+
         handleSyncEvents(V_cell_ocv);
 
         data->SoC_fused = fuseSoC();
         data->SoC_fused = constrain(data->SoC_fused, 0.0f, 100.0f);
         data->SoC_uncertainty = computeUncertainty();
 
-        if (model->isAutoDetect()) {
-            float delta_cycles = data->cycles_partial - last_cycles;
-            updateSegmentAndKalman(I, delta_cycles);
-            last_cycles = data->cycles_partial;
-        }
-
         updateCycleDetection(I);
+
+        // F1: mppt_state_prev mis à jour en fin de cycle pour la prochaine itération
+        mppt_state_prev = mppt_state;
     }
 
     // ============================================================
@@ -643,6 +766,7 @@ public:
         if (I > 0.05f) cycle.was_charging = true;
         if (I < -0.05f) cycle.was_discharging = true;
 
+        // F1: transition FLOAT désormais détectée -> comptage de cycles fonctionnel
         if (cycle.was_discharging && mppt_state == State_FLOAT
             && mppt_state_prev != State_FLOAT && cycle.SoC_min < 85.0f) {
             float DoD = cycle.SoC_max - cycle.SoC_min;

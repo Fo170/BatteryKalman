@@ -1,5 +1,10 @@
 # 🚀 BatteryKalman v1.5 - Release Summary
 
+> **Note (v1.5.3)** : ce document est le résumé de la release v1.5 d'origine.
+> La version courante est **1.5.3** (7 bugs corrigés F1–F7 + porte de
+> stabilité REST F8) — voir [`CHANGELOG.md`](CHANGELOG.md) et
+> `doc/analyse_kalman.md` (§8).
+
 ## ✅ Toutes les Améliorations Implémentées
 
 La version **1.5** de BatteryKalman représente une restructuration **complète** du filtre de Kalman, transformant une implémentation 1D simplifiée en un **Extended Kalman Filter (EKF) 2D théoriquement rigoureux** avec apprentissage automatique des paramètres.
@@ -221,7 +226,7 @@ BatteryKalman **REQUIRE** une classe implémentant l'interface **`BatteryModel`*
 - `ocvToSoc()` — lookup OCV → SoC
 - Autres (getCellCount, getNominalCapacity, etc.)
 
-### 💚 BatteryModels v1.2.0+ (Recommandé)
+### 💚 BatteryModels v1.3+ (Recommandé)
 
 [**BatteryModels**](https://github.com/Fo170/BatteryModels) est une implémentation **totalement compatible** et **recommandée** de l'interface `BatteryModel`.
 
@@ -246,7 +251,7 @@ Tous les trois peuvent être utilisés avec BatteryKalman!
 
 ### Responsabilités de Chaque Librairie
 
-**BatteryModels v1.2.0+ fournit:**
+**BatteryModels v1.3+ fournit:**
 - ✓ Tables OCV (Open Circuit Voltage) par chimie batterie
 - ✓ Détection état de charge (BULK, ABSORPTION, FLOAT, REST, DISCHARGE)
 - ✓ Modèles résistance interne + compensation thermique
@@ -265,7 +270,7 @@ Tous les trois peuvent être utilisés avec BatteryKalman!
 ```bash
 # 1. PlatformIO: Ajouter au platformio.ini
 lib_deps = 
-    Fo170/BatteryModels >= 1.2.0    # ← D'ABORD
+    Fo170/BatteryModels >= 1.3    # ← D'ABORD
     Fo170/BatteryKalman >= 1.5      # Ensuite
 
 # 2. Arduino IDE: Library Manager

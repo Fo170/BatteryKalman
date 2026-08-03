@@ -1,4 +1,4 @@
-# BatteryModels Compatibility - BatteryKalman v1.5
+# BatteryModels Compatibility - BatteryKalman v1.5.3
 
 ## 🟢 Status: Totalement Compatible (Mais Optionnel)
 
@@ -6,7 +6,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        BatteryKalman v1.5                       │
+│                        BatteryKalman v1.5.3                    │
 │                   (EKF 2D pour Kalman filtering)                │
 └────────────────────┬────────────────────────────────────────────┘
                      │ Dépend de (interface abstraite)
@@ -22,32 +22,34 @@
         │ - ... 8+ méthodes             │
         └─────────┬──────────────────────┘
                   │ Peut être implémentée par:
-                  │
+                    │
     ┌─────────────┼─────────────┬──────────────────┐
     ↓             ↓             ↓                  ↓
 BatteryModels  Votre Code   Autre Librairie    Simplementation
-v1.2.0+        Perso        Compatible         Custom
+v1.3+          Perso        Compatible         Custom
 (Recommandé)   (OK)         (OK)               (OK)
 ```
 
 ---
 
-## 💚 BatteryModels v1.2.0+ (Recommandé)
+## 💚 BatteryModels v1.3+ (Recommandé)
 
 ### Avantages
 - ✅ **Spécialisé**: 15+ technologies batterie (LiFePO4, Li-ion, Lead, NiMH, etc.)
 - ✅ **Complet**: Modèles OCV, résistance, thermal, Peukert, aging
 - ✅ **Éprouvé**: Utilisé dans des systèmes production
 - ✅ **Actif**: Maintenu régulièrement
-- ✅ **Compatible**: 100% compatible avec BatteryKalman v1.5
+- ✅ **Compatible**: 100% compatible avec BatteryKalman v1.5.3
+- ✅ **v1.3**: corrige `detectChargeState()` (F7) — FLOAT détecté avant REST,
+  point de référence "batterie pleine" restauré pour BatteryKalman
 
 ### Installation
 
 **PlatformIO**:
 ```ini
 lib_deps = 
-    Fo170/BatteryModels >= 1.2.0
-    Fo170/BatteryKalman >= 1.5
+    Fo170/BatteryModels >= 1.3
+    Fo170/BatteryKalman >= 1.5.3
 ```
 
 **Arduino IDE**:
@@ -220,11 +222,11 @@ Si vous implémentez votre propre BatteryModel:
 
 | Aspect | Statut |
 |--------|--------|
-| **BatteryModels v1.2.0+ obligatoire?** | ❌ Non, optionnel |
+| **BatteryModels v1.3 obligatoire?** | ❌ Non, optionnel |
 | **BatteryModels compatible?** | ✅ Oui, 100% |
 | **Votre propre implémentation?** | ✅ Possible |
 | **Autre librairie?** | ✅ Si elle implémente BatteryModel |
 | **Code BatteryKalman change?** | ❌ Non, reste identique |
 | **Persistance compatible?** | ✅ Oui, SoCData + KalmanState2D |
 
-**En résumé**: Utilisez BatteryModels v1.2.0+ (recommandé) OU implémentez votre propre BatteryModel. BatteryKalman marche avec les deux! 🎯
+**En résumé**: Utilisez BatteryModels v1.3 (recommandé, avec le correctif F7 de `detectChargeState()`) OU implémentez votre propre BatteryModel. BatteryKalman marche avec les deux! 🎯

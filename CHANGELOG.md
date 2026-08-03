@@ -1,5 +1,79 @@
 # Changelog - BatteryKalman
 
+## [1.5.3] - 2026-08-03
+
+### 🐛 Corrections de bugs (v1.5.2) + Porte de stabilité REST (F8)
+
+Version corrigée basée sur l'analyse de données réelles (voir `doc/analyse_kalman.md`).
+Toutes les corrections sont dans `src/BatteryKalman.h` ; le correctif F7 pour
+`BatteryModels.h` (`detectChargeState`) est intégré dans la **v1.3** de
+BatteryModels et documenté dans `doc/correction_BatteryModels.md`.
+
+### 🐛 F1 — Transition d'état MPPT jamais détectée (bug principal)
+- `updateMpptState()` mettait à jour `mppt_state_prev` dans la fonction, donc
+  `mppt_state == FLOAT && mppt_state_prev != FLOAT` n'était **jamais vrai**.
+  Synchro FLOAT, fermeture de segment FLOAT et comptage de cycles = code mort.
+- **Fix**: `mppt_state_prev` mis à jour en fin de `update()` (différé).
+
+### 🐛 F2 — Reset coulomb avant la mesure du segment
+- `handleSyncEvents()` (→ `doSync()` → reset coulomb) appelé **avant**
+  `updateSegmentAndKalman()` → segment réinitialisé avant mesure (`dAh ≈ 0`).
+- **Fix**: `updateSegmentAndKalman()` appelé avant `handleSyncEvents()`.
+
+### 🐛 F3 — R adaptatif jamais appliqué
+- `updateREstimate()` mettait à jour `R_estimated` mais `updateSegmentAndKalman()`
+  utilisait `R_measured` (jamais modifié). Contradiction avec IMPROVEMENTS.md §4
+  qui documentait `R_measured = constrain(R_estimated, R_MIN, R_MAX)`.
+- **Fix**: `R_measured = R_estimated` après lissage.
+
+### 🐛 F4 — EKF 2D incomplet (vieillissement non appris)
+- `predictKalman()` n'appliquait pas `C -= dC/dcycle × Δcycles` et ne propageait pas
+  la covariance croisée ; `applyKalmanUpdate2D()` forçait `K_aging = 0` et ne mettait
+  jamais à jour `P[1][1]` → `dC_dCycle` inapprenable (filtre 1D de fait).
+- **Fix**: prédiction complète (`F = [[1,−Δcycles],[0,1]]`, `P = F·P·Fᵀ + Q`),
+  gain 2D `K = [P_CC, P_agingC]/S`, correction des 2 composantes + covariance.
+
+### 🐛 F5 — Fermeture REST_LONG conditionnée à `seg.n > 200`
+- Nécessitait 200 échantillons (16,7 h) → fermetures quasi jamais déclenchées.
+- **Fix**: fermeture sur **transition** REST_LONG (cf. F1).
+
+### 🐛 F6 — Apprentissage gated par `isAutoDetect()`
+- `if (model->isAutoDetect()) updateSegmentAndKalman(...)` → le Kalman n'apprenait
+  que si la capacité nominale était 0.
+- **Fix**: apprentissage toujours actif (l'auto-détection reste indépendante).
+
+### 🐛 F7 — `detectChargeState()` : FLOAT masqué par REST (BatteryModels.h)
+- Ordre des tests `discharging → in_rest → near_float` : en FLOAT (|I| < 0,05 A),
+  l'état était classé REST, jamais FLOAT.
+- **Fix**: tester `near_float` avant `in_rest`.
+
+### ✨ F8 — Porte de stabilité REST (OCV fiable)
+- Le point de référence REST_LONG ne dépend plus d'un délai fixe de 2 h
+  (inatteignable sur de nombreuses installations).
+- REST_LONG est atteint quand : repos ≥ `REST_LONG_MIN_MS` (15 min par défaut)
+  **ET** tension stable (écart crête < `REST_LONG_STABLE_MV` = 20 mV) sur une
+  fenêtre temporelle `REST_LONG_STABLE_MS` (30 min).
+- Indépendant du rythme d'échantillonnage (10 Hz, 1 Hz, 5 min...).
+
+### ⚙️ Nouvelles constantes de configuration (F8)
+```cpp
+REST_LONG_MIN_MS            // durée min de repos (900000 = 15 min)
+REST_LONG_STABLE_MV         // stabilité tension (0.020 V)
+REST_LONG_STABLE_MS         // fenêtre temporelle stabilité (1800000 = 30 min)
+REST_LONG_STABLE_MIN_SAMPLES// échantillons min dans la fenêtre (6)
+REST_LONG_STABLE_MAX_SAMPLES// taille max anneau (32)
+REST_LONG_SYNC_MS           // délai entre 2 synchros REST_LONG (30 min)
+```
+
+### 📊 Validation
+- Port Python (`analyse_kalman_fixed.py`) sur les données réelles `evo_bat.csv`
+  (plomb inondé 6S) : capacité estimée **108,2 Ah (bugué) → 43,5 Ah (corrigé)**,
+  cohérent avec un groupement usagé < 50 Ah.
+- Cycle synthétique 100 Ah : convergence en 8 corrections, `P` 4,0 → 0,5,
+  confiance → 90 %, R adapté, cycles comptés.
+
+---
+
 ## [1.5] - 2026-07-20
 
 ### 🎉 Major Release: Complete Kalman Filter Overhaul

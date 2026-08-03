@@ -6,26 +6,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **BatteryKalman** is an Arduino library implementing an **Extended Kalman Filter (EKF 2D)** for battery capacity estimation, aging tracking, and state-of-charge (SoC) determination. It is technology-agnostic and uses an abstract `BatteryModel` interface for battery-specific parameters.
 
-**Version**: 1.5 (July 2026)  
+**Version**: 1.5.3 (Août 2026 — 7 bugs corrigés F1–F7 + porte de stabilité REST F8)  
 **Status**: Production-ready with full theoretical Kalman implementation  
 **Licence**: GNU General Public License v3
 
-**Key Features (v1.5)**:
+**Key Features (v1.5.3)**:
 - ✓ **2D State Space**: Simultaneously estimates capacity (C) and aging rate (dC/dcycle)
 - ✓ **Process Noise Q**: Realistic uncertainty growth between measurements
 - ✓ **Extended Kalman Filter**: Proper EKF with Jacobian, not simplified scalar filter
 - ✓ **Online R Estimation**: Measurement noise adapts to real conditions
 - ✓ **Continuous Confidence**: Data-driven metric [0,1] replaces discrete phases
 - ✓ **Automatic Aging Learning**: No hardcoded drift rates; learned from measurements
+- ✓ **v1.5.3**: 7 bugs corrected (F1–F7) + REST stability gate (F8)
 
 **Interface Required**:
 - `BatteryModel` abstract class (any compatible implementation)
-- Recommended: [BatteryModels v1.2.0+](https://github.com/Fo170/BatteryModels)
+- Recommended: [BatteryModels v1.3+](https://github.com/Fo170/BatteryModels)
 - Alternative: Your own BatteryModel implementation
 
 **Compatibility**:
 - Any `BatteryModel` implementation (required interface)
-- [BatteryModels v1.2.0+](https://github.com/Fo170/BatteryModels) (recommended, fully compatible)
+- [BatteryModels v1.3+](https://github.com/Fo170/BatteryModels) (recommended, fully compatible)
 - Coulomb library (optional, for Ah integration)
 - Arduino framework (ESP32, ESP8266, STM32, Teensy, ATmega)
 - C++11 minimum
@@ -280,9 +281,9 @@ class BatteryModel {
 };
 ```
 
-### Recommended: [BatteryModels v1.2.0+](https://github.com/Fo170/BatteryModels)
+### Recommended: [BatteryModels v1.3+](https://github.com/Fo170/BatteryModels)
 
-- ✅ **Fully compatible** with BatteryKalman v1.5
+- ✅ **Fully compatible** with BatteryKalman v1.5.3
 - ✅ **Recommended implementation** of BatteryModel interface
 - ✅ Provides OCV curves, thermal compensation, charge state detection
 - ✅ License: GNU GPLv3
@@ -301,14 +302,21 @@ class BatteryModel {
 ### Installation Checklist
 ```
 ✓ Arduino IDE 1.8.13+ or PlatformIO
-✓ BatteryModel implementation (BatteryModels v1.2.0+ recommended)
+✓ BatteryModel implementation (BatteryModels v1.3+ recommended)
 ✓ Coulomb library (optional, or implement your own)
 ✓ Target board with Arduino framework support
 ```
 
-## API Compatibility Notes (BatteryModels v1.2.0 Update)
+## API Compatibility Notes (BatteryModels)
 
-**Breaking changes in BatteryModels v1.2.0** required updates to BatteryKalman:
+### v1.3 (2026-08-03) — Correctif de détection d'état
+- **`detectChargeState()`** : le test `near_float` passe désormais **avant**
+  `in_rest` (F7). Une batterie maintenue en float avec un courant faible
+  (`|I| < 0,05 A`) est classée `State_FLOAT` (au lieu de `State_REST`),
+  restaurant le point de référence "batterie pleine" pour BatteryKalman.
+- **Aucun changement d'API** : signatures et enums identiques à v1.2.0.
+
+### v1.2.0 (Changements historiques) — requiert la mise à jour de BatteryKalman
 - **Method renamed**: `model->detectMpptState()` → `model->detectChargeState(V, I, capacity)`
 - **Enum renamed**: `MpptState` → `ChargeState` (from BatteryModels)
 - **Enum values renamed**: `MPPT_*` → `State_*` (e.g., `MPPT_FLOAT` → `State_FLOAT`)
@@ -321,7 +329,7 @@ These changes reflect BatteryModels' shift from MPPT (Maximum Power Point Tracki
 
 **Official**: [https://github.com/Fo170/BatteryKalman](https://github.com/Fo170/BatteryKalman)
 
-- **Main Branch**: Latest stable release (v1.5)
+- **Main Branch**: Latest stable release (v1.5.3)
 - **License**: GNU General Public License v3
 - **Issues**: https://github.com/Fo170/BatteryKalman/issues
 - **Discussions**: https://github.com/Fo170/BatteryKalman/discussions

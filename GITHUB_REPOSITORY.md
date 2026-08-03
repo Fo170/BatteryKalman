@@ -4,7 +4,7 @@
 
 **GitHub**: [https://github.com/Fo170/BatteryKalman](https://github.com/Fo170/BatteryKalman)
 
-**Main Branch**: Contains latest stable release (v1.5)
+**Main Branch**: Contains latest stable release (v1.5.3)
 
 ---
 
@@ -47,15 +47,15 @@ git pull origin main
 ```ini
 [env:esp32]
 lib_deps = 
-    Fo170/BatteryModels >= 1.2.0
-    Fo170/BatteryKalman >= 1.5
+    Fo170/BatteryModels >= 1.3
+    Fo170/BatteryKalman >= 1.5.3
 ```
 
 ### 2. Arduino IDE Library Manager
 
 - Tools → Manage Libraries
 - Search: "BatteryKalman"
-- Install v1.5+
+- Install v1.5.3+
 
 ### 3. Manual from GitHub
 
@@ -83,8 +83,7 @@ All by **Fo170**:
 ```
 BatteryKalman/
 ├── src/
-│   ├── BatteryKalman.h                (v1.5 - EKF 2D implementation)
-│   └── BatteryKalman_v2.0.0_backup.h  (Legacy backup)
+│   └── BatteryKalman.h                (v1.5.3 - EKF 2D implementation, bugs F1-F8 corrigés)
 ├── Exemples/
 │   ├── Utilisation_de_base/           (Basic usage)
 │   └── avec_persistance/              (With state persistence)
@@ -183,7 +182,7 @@ Before using BatteryKalman:
 ```
 ☐ Clone from https://github.com/Fo170/BatteryKalman
 ☐ Read README.md for overview
-☐ Install BatteryModels v1.2.0+ (recommended)
+☐ Install BatteryModels v1.3+ (recommended)
 ☐ Copy library to Arduino/libraries/
 ☐ Review example sketch
 ☐ Test with your hardware
@@ -204,7 +203,7 @@ Before using BatteryKalman:
 
 ## 🎯 Version Info
 
-- **Latest Release**: v1.5 (July 2026)
+- **Latest Release**: v1.5.3 (August 2026)
 - **Branch**: main (production-ready)
 - **License**: GNU GPLv3
 - **Status**: Stable

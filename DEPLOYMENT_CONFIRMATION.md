@@ -1,9 +1,9 @@
-# ✅ BatteryKalman v1.5 - Deployment Confirmation
+# ✅ BatteryKalman v1.5.3 - Deployment Confirmation
 
 ## 🎉 Deployment Status: COMPLETED
 
-**Date**: July 20, 2026  
-**Version**: 1.5  
+**Date**: August 3, 2026  
+**Version**: 1.5.3 (v1.5 + corrections de bugs F1–F8)  
 **Status**: ✅ LIVE ON GITHUB  
 **Repository**: https://github.com/Fo170/BatteryKalman
 
@@ -15,18 +15,17 @@
 |----------|-------|
 | **URL** | https://github.com/Fo170/BatteryKalman |
 | **Branch** | main (production-ready) |
-| **Version** | 1.5 |
+| **Version** | 1.5.3 |
 | **Licence** | GNU General Public License v3 |
 | **Author** | Fo170 |
 | **Status** | Public Repository |
 
 ---
 
-## 📦 Deployment Contents (15 files)
+## 📦 Deployment Contents
 
-### Code Files (2)
-- ✅ `src/BatteryKalman.h` (777 lines - EKF 2D v1.5)
-- ✅ `src/BatteryKalman_v2.0.0_backup.h` (Legacy backup)
+### Code Files
+- ✅ `src/BatteryKalman.h` (EKF 2D v1.5.3 - bugs F1–F8 corrigés)
 
 ### Example Sketches (2)
 - ✅ `Exemples/Utilisation_de_base/Utilisation_de_base.ino`
@@ -62,14 +61,14 @@ git checkout main
 ```ini
 [env:your_board]
 lib_deps = 
-    Fo170/BatteryModels >= 1.2.0
-    Fo170/BatteryKalman >= 1.5
+    Fo170/BatteryModels >= 1.3
+    Fo170/BatteryKalman >= 1.5.3
 ```
 
 ### Arduino IDE
 1. Tools → Manage Libraries
 2. Search "BatteryKalman"
-3. Install v1.5+
+3. Install v1.5.3+
 
 ---
 
@@ -109,7 +108,7 @@ lib_deps =
 
 ## 🔗 Integration with BatteryModels
 
-**Compatibility**: ✅ 100% compatible with BatteryModels v1.2.0+
+**Compatibility**: ✅ 100% compatible with BatteryModels v1.3+
 
 **Status**:
 - ✅ Recommended implementation (not mandatory)
@@ -229,7 +228,7 @@ Breakdown:
 - ✅ Comprehensive documentation (9 files)
 - ✅ Working examples (2 sketches)
 - ✅ GNU GPL v3 license
-- ✅ 100% BatteryModels v1.2.0+ compatible
+- ✅ 100% BatteryModels v1.3+ compatible
 
 **Status**: Production-ready and ready for deployment
 

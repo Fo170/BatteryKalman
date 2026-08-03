@@ -4,7 +4,7 @@
 #include <LittleFS.h>
 
 SoCData socData;
-KalmanState2D kalmanState;  // v3.0.0: EKF 2D avec aging learnable
+KalmanState2D kalmanState;  // EKF 2D avec aging learnable
 BatteryModel model(TECH_LIFEPO4, 4, 100.0f);
 Coulomb coulomb;
 BatteryKalman battery(&socData, &kalmanState, &model, &coulomb);
@@ -12,10 +12,10 @@ BatteryKalman battery(&socData, &kalmanState, &model, &coulomb);
 void setup() {
     Serial.begin(115200);
     LittleFS.begin();
-    
+
     // Charger état depuis LittleFS
     loadBatteryState();
-    
+
     battery.begin();
 }
 
@@ -23,17 +23,22 @@ void loop() {
     static uint32_t lastUpdate = 0;
     static uint32_t lastSave = 0;
     uint32_t now = millis();
-    
+
     if (now - lastUpdate >= 100) {
         lastUpdate = now;
-        
+
         float voltage = analogRead(A0) * 0.0125;
         float current = readINA226();  // Votre lecture INA226
         float temp = 25.0;
-        
-        battery.update(voltage, current, temp, 100);
+
+        // 1) Alimenter le compteur coulomb (intègre Ah, mémorise dt).
+        //    API v1.5.3: coulomb.update(current) — selon ton implémentation.
+        coulomb.update(current);
+
+        // 2) Mise à jour Kalman — API v1.5.3: update(V, I, T)
+        battery.update(voltage, current, temp);
     }
-    
+
     // Sauvegarde toutes les 5 minutes si nécessaire
     if (now - lastSave >= 300000 && battery.isStateDirty()) {
         lastSave = now;
@@ -58,20 +63,21 @@ void saveBatteryState() {
     doc["cycles_full"] = socData.cycles_full;
     doc["DoD_acc"] = socData.DoD_accumulated;
 
-    // KalmanState2D (v3.0.0)
+    // KalmanState2D
     doc["C_hat"] = kalmanState.C_hat;
-    doc["dC_dCycle"] = kalmanState.dC_dCycle;  // NEW: taux vieillissement
-    doc["P_CC"] = kalmanState.P[0][0];         // NEW: P[2x2]
-    doc["P_Caging"] = kalmanState.P[0][1];     // NEW: covariance croisée
-    doc["P_aging"] = kalmanState.P[1][1];      // NEW: variance aging
+    doc["dC_dCycle"] = kalmanState.dC_dCycle;  // taux vieillissement
+    doc["P_CC"] = kalmanState.P[0][0];         // P[2x2]
+    doc["P_Caging"] = kalmanState.P[0][1];     // covariance croisée
+    doc["P_aging"] = kalmanState.P[1][1];      // variance aging
     doc["R_estimated"] = kalmanState.R_estimated;
+    doc["R_measured"] = kalmanState.R_measured;   // v1.5.3
     doc["confidence"] = kalmanState.confidence;
     doc["n_updates"] = kalmanState.n_updates;
     doc["initialized"] = kalmanState.initialized;
 
     serializeJson(doc, f);
     f.close();
-    Serial.println("État sauvegardé (v3.0.0)");
+    Serial.println("État sauvegardé");
 }
 
 void loadBatteryState() {
@@ -94,18 +100,19 @@ void loadBatteryState() {
     socData.cycles_full = doc["cycles_full"] | 0;
     socData.DoD_accumulated = doc["DoD_acc"] | 0.0f;
 
-    // KalmanState2D (v3.0.0)
+    // KalmanState2D
     kalmanState.C_hat = doc["C_hat"] | 0.0f;
-    kalmanState.dC_dCycle = doc["dC_dCycle"] | -0.0005f;  // Défault si ancien format
+    kalmanState.dC_dCycle = doc["dC_dCycle"] | -0.0005f;  // Défaut si ancien format
     kalmanState.P[0][0] = doc["P_CC"] | KALMAN_P_INIT_C;
     kalmanState.P[0][1] = doc["P_Caging"] | 0.0f;
     kalmanState.P[1][0] = kalmanState.P[0][1];
     kalmanState.P[1][1] = doc["P_aging"] | KALMAN_P_INIT_AGING;
     kalmanState.R_estimated = doc["R_estimated"] | R_INIT;
+    kalmanState.R_measured = doc["R_measured"] | R_INIT;  // v1.5.3
     kalmanState.confidence = doc["confidence"] | 0.0f;
     kalmanState.n_updates = doc["n_updates"] | 0;
     kalmanState.initialized = doc["initialized"] | false;
 
     f.close();
-    Serial.println("État chargé (v3.0.0)");
+    Serial.println("État chargé");
 }

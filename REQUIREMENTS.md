@@ -1,4 +1,4 @@
-# Requirements - BatteryKalman v1.5
+# Requirements - BatteryKalman v1.5.3
 
 ## 🔴 DÉPENDANCE OBLIGATOIRE
 
@@ -22,7 +22,7 @@ public:
 };
 ```
 
-### 💚 IMPLÉMENTATION RECOMMANDÉE: BatteryModels v1.2.0+
+### 💚 IMPLÉMENTATION RECOMMANDÉE: BatteryModels v1.3+
 
 **[GitHub: https://github.com/Fo170/BatteryModels](https://github.com/Fo170/BatteryModels)**
 
@@ -65,14 +65,14 @@ bool isOcvReliable();
 ```ini
 [env:esp32]
 lib_deps = 
-    Fo170/BatteryModels >= 1.2.0
-    Fo170/BatteryKalman >= 1.5
+    Fo170/BatteryModels >= 1.3
+    Fo170/BatteryKalman >= 1.5.3
 ```
 
 **Arduino IDE:**
 1. Sketch → Include Library → Manage Libraries
-2. Search "BatteryModels" → Install v1.2.0+
-3. Search "BatteryKalman" → Install v1.5+
+2. Search "BatteryModels" → Install v1.3+
+3. Search "BatteryKalman" → Install v1.5.3+
 
 **Vérification:**
 ```cpp
@@ -145,8 +145,8 @@ lib_deps =
 
 ```
 ☐ 1. Arduino IDE 1.8.13+ OU PlatformIO
-☐ 2. BatteryModels v1.2.0+ (★ OBLIGATOIRE)
-☐ 3. BatteryKalman v1.5
+☐ 2. BatteryModels v1.3+ (★ OBLIGATOIRE)
+☐ 3. BatteryKalman v1.5.3
 ☐ 4. Coulomb (si pas implémenté en propre)
 ☐ 5. ArduinoJson (si persistance JSON)
 ☐ 6. Board support (ESP32, STM32, etc.)
@@ -161,8 +161,8 @@ board = esp32-devkitc-32
 framework = arduino
 
 lib_deps =
-    Fo170/BatteryModels >= 1.2.0    # ← OBLIGATOIRE
-    Fo170/BatteryKalman >= 1.5       # Cette librairie
+    Fo170/BatteryModels >= 1.3    # ← OBLIGATOIRE
+    Fo170/BatteryKalman >= 1.5.3       # Cette librairie
     Fo170/Coulomb >= 1.0             # Optional
     bblanchon/ArduinoJson @ ^6.20.0 # Optional (persistance)
 
@@ -181,8 +181,8 @@ monitor_speed = 115200
    - Install "esp32" by Espressif
 
 3. **Installer libraries** (Tools → Manage Libraries):
-   - Search "BatteryModels" → Install (v1.2.0+)
-   - Search "BatteryKalman" → Install (v1.5+)
+   - Search "BatteryModels" → Install (v1.3+)
+   - Search "BatteryKalman" → Install (v1.5.3+)
    - Search "Coulomb" → Install (optional)
    - Search "ArduinoJson" → Install (optional)
 
@@ -206,8 +206,8 @@ monitor_speed = 115200
 # platformio.ini
 [env:production]
 lib_deps =
-    Fo170/BatteryModels >= 1.2.0
-    Fo170/BatteryKalman >= 1.5
+    Fo170/BatteryModels >= 1.3
+    Fo170/BatteryKalman >= 1.5.3
     Fo170/Coulomb >= 1.0
     bblanchon/ArduinoJson @ ^6.20.0
 ```
@@ -217,8 +217,8 @@ lib_deps =
 ```ini
 [env:minimal]
 lib_deps =
-    Fo170/BatteryModels >= 1.2.0    # ★ ONLY MANDATORY
-    Fo170/BatteryKalman >= 1.5
+    Fo170/BatteryModels >= 1.3    # ★ ONLY MANDATORY
+    Fo170/BatteryKalman >= 1.5.3
 ```
 
 ---
@@ -232,12 +232,12 @@ lib_deps =
 **Solution**:
 1. Vérifier: Sketch → Include Library → Manage Libraries
 2. Search "BatteryModels"
-3. Installer v1.2.0+
+3. Installer v1.3+
 4. Restart Arduino IDE
 
 ### Erreur: `detectChargeState undefined`
 
-**Cause**: BatteryModels < v1.2.0 installé (API changée)
+**Cause**: BatteryModels < v1.3 installé (API changée)
 
 **Solution**:
 1. Library Manager → BatteryModels
@@ -251,7 +251,6 @@ lib_deps =
 **Solution**:
 - Downgrade optionnel: Supprimer P[2][2], revenir à P scalaire
 - OU: Utiliser ESP32 (RAM 512 KB)
-- OU: Utiliser version v2.0.0_backup (1D Kalman)
 
 ### Erreur: `Coulomb not found`
 
@@ -292,12 +291,12 @@ void loop() {
 | Component | Min Version | Recommended | Max Tested |
 |-----------|-------------|-------------|------------|
 | Arduino IDE | 1.8.13 | 2.0+ | 2.3 |
-| BatteryModels | **1.2.0** | 1.2.0+ | 1.2.x |
-| BatteryKalman | **1.5** | 1.5+ | 1.5 |
+| BatteryModels | **1.3** | 1.3+ | 1.3 |
+| BatteryKalman | **1.5.3** | 1.5.3+ | 1.5.3 |
 | Coulomb | 1.0 | 1.0+ | 1.0+ |
 | ArduinoJson | 6.18 | 6.20+ | 7.0 |
 
 ---
 
-**Last Updated**: July 20, 2026  
-**Status**: Current for v1.5 release
+**Last Updated**: August 3, 2026  
+**Status**: Current for v1.5.3 release

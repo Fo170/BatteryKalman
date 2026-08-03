@@ -1,6 +1,6 @@
 {
   "name": "BatteryKalman",
-  "version": "1.5.1",
+  "version": "1.5.3",
   "description": "Algorithme de filtrage de Kalman adaptatif multi-phases pour estimation de capacité et état de charge de batteries",
   "keywords": [
     "kalman",
@@ -23,7 +23,7 @@
       "maintainer": true
     }
   ],
-  "license": "MIT",
+  "license": "GPL-3.0",
   "frameworks": "arduino",
   "platforms": [
     "espressif8266",

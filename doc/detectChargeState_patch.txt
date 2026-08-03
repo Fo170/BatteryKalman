@@ -1,0 +1,32 @@
+PATCH BatteryModels.h — detectChargeState()
+
+BUG 7: l'ordre des tests était:
+  discharging -> in_rest -> near_float
+Donc en float (I faible, |I| < 0.05A), la batterie était classée REST, jamais FLOAT.
+=> le point de référence "FLOAT = 100%" (95% de confiance) n'était jamais produit.
+
+CORRECTION (nouvel ordre):
+  discharging -> near_float -> in_rest -> near_abs -> BULK
+
+Le test near_float passe AVANT in_rest pour qu'une tension dans la fenêtre
+FLOAT avec courant faible soit bien classée State_FLOAT.
+
+Ancien code (à remplacer) :
+---------------------------------------------------------------
+        if (discharging) return State_DISCHARGE;
+        if (in_rest) return State_REST;
+        if (near_float && fabsf(current) < I_float_max) return State_FLOAT;
+        if (near_abs && charging) return State_ABSORPTION;
+        if (charging) return State_BULK;
+        return State_UNKNOWN;
+---------------------------------------------------------------
+
+Nouveau code :
+---------------------------------------------------------------
+        if (discharging) return State_DISCHARGE;
+        if (near_float && fabsf(current) < I_float_max) return State_FLOAT;
+        if (in_rest) return State_REST;
+        if (near_abs && charging) return State_ABSORPTION;
+        if (charging) return State_BULK;
+        return State_UNKNOWN;
+---------------------------------------------------------------

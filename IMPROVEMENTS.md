@@ -1,5 +1,12 @@
 # BatteryKalman v1.5 - Améliorations Complètes
 
+> **Mise à jour v1.5.3** : ce document décrit les améliorations structurelles v1.5.
+> Les 7 corrections de bugs (F1–F7) + la porte de stabilité REST (F8) de la
+> v1.5.3 sont documentées dans [`CHANGELOG.md`](CHANGELOG.md) et
+> `doc/analyse_kalman.md` (§8). Les sections 3 et 4 ci-dessous décrivent
+> l'**intention** (EKF 2D complet, R appliqué) — la v1.5.3 aligne le code
+> livré sur cette intention.
+
 ## 🎯 Vue d'ensemble
 
 BatteryKalman a été entièrement restructuré pour passer d'un filtre Kalman 1D simplifié à un **Extended Kalman Filter (EKF) 2D théoriquement fondé** avec toutes les améliorations recommandées.
@@ -8,7 +15,7 @@ BatteryKalman a été entièrement restructuré pour passer d'un filtre Kalman 1
 **Version**: 1.5  
 **Licence**: GNU General Public License v3  
 **Interface Requise**: `BatteryModel` (implémentation quelconque)  
-**Implémentation Recommandée**: [BatteryModels v1.2.0+](https://github.com/Fo170/BatteryModels) (compatible à 100%)  
+**Implémentation Recommandée**: [BatteryModels v1.3+](https://github.com/Fo170/BatteryModels) (compatible à 100%)  
 **Changements majeurs**: 5  
 **Nouvelles méthodes**: 6  
 **Structures rénovées**: 1 (KalmanState → KalmanState2D)
