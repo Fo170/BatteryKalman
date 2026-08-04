@@ -82,15 +82,15 @@ lib_deps =
 
 ---
 
-## ✅ DÉPENDANCES OPTIONNELLES
+## ✅ DÉPENDANCES
 
-### Coulomb (Optionnel)
+### Coulomb (Obligatoire)
 
 **Purpose**: Ampere-hour integration over time
 
-**GitHub**: [Fo170/CoulombAh](https://github.com/Fo170/CoulombAh) — header `Coulomb.h`, API `addMeasurement(current)` (intègre I×dt via micros())
+**GitHub**: [Fo170/CoulombsAh](https://github.com/Fo170/CoulombsAh) — header `Coulomb.h`, API `addMeasurement(current)` (intègre I×dt via micros()). Depuis v1.6.0, BatteryKalman requiert un `Coulomb*` au constructeur : persistance déléguée à [Fo170/Persistance](https://github.com/Fo170/Persistance).
 
-**Status**: Optional si vous implémentez votre propre coulomb counter
+**Status**: Obligatoire depuis la v1.6.0 (constructeur `BatteryKalman(..., Coulomb*)`, aucun null-guard)
 
 **Alternative**: Implémenter `Coulomb` interface avec vos propres méthodes
 
@@ -183,8 +183,8 @@ monitor_speed = 115200
 3. **Installer libraries** (Tools → Manage Libraries):
    - Search "BatteryModels" → Install (v1.3+)
    - Search "BatteryKalman" → Install (v1.5.3+)
-   - Search "Coulomb" → Install (optional)
-   - Search "ArduinoJson" → Install (optional)
+   - Search "Coulomb" → Install (obligatoire, depuis Fo170/CoulombsAh v1.1+)
+   - Search "ArduinoJson" → Install (optional, uniquement pour l'exemple avec_persistance)
 
 4. **Vérifier setup**:
    ```cpp
@@ -254,9 +254,9 @@ lib_deps =
 
 ### Erreur: `Coulomb not found`
 
-**Cause**: Coulomb optional; vous devez implémenter interface
+**Cause**: CoulombsAh non installé — depuis la v1.6.0, `Coulomb*` est obligatoire au constructeur
 
-**Solution**: Voir `Exemples/avec_persistance/` pour créer votre propre Coulomb wrapper
+**Solution**: Installer [Fo170/CoulombsAh](https://github.com/Fo170/CoulombsAh) (v1.1+) et voir `Exemples/` pour le branchement
 
 ---
 

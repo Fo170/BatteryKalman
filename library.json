@@ -38,6 +38,6 @@
   "headers": "BatteryKalman.h",
   "dependencies": {
     "Fo170/BatteryModels": ">=1.4.0",
-    "Fo170/CoulombsAh": ">=1.0.0"
+    "Fo170/CoulombsAh": ">=1.1.0"
   }
 }
