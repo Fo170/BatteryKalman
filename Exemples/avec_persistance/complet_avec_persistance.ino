@@ -32,10 +32,10 @@ void loop() {
         float temp = 25.0;
 
         // 1) Alimenter le compteur coulomb (intègre Ah, mémorise dt).
-        //    API v1.5.3: coulomb.update(current) — selon ton implémentation.
+        //    API v1.6.0: coulomb.update(current) — selon ton implémentation.
         coulomb.update(current);
 
-        // 2) Mise à jour Kalman — API v1.5.3: update(V, I, T)
+        // 2) Mise à jour Kalman — API v1.6.0: update(V, I, T)
         battery.update(voltage, current, temp);
     }
 
@@ -100,15 +100,16 @@ void loadBatteryState() {
     socData.cycles_full = doc["cycles_full"] | 0;
     socData.DoD_accumulated = doc["DoD_acc"] | 0.0f;
 
-    // KalmanState2D
+    // KalmanState2D (défauts = valeurs internes v1.5.3, indépendants des
+    // macros sentinelles v1.6.0 qui valent NAN par défaut)
     kalmanState.C_hat = doc["C_hat"] | 0.0f;
     kalmanState.dC_dCycle = doc["dC_dCycle"] | -0.0005f;  // Défaut si ancien format
-    kalmanState.P[0][0] = doc["P_CC"] | KALMAN_P_INIT_C;
+    kalmanState.P[0][0] = doc["P_CC"] | KALMAN_DEFAULT_TUNING.p_init_C;
     kalmanState.P[0][1] = doc["P_Caging"] | 0.0f;
     kalmanState.P[1][0] = kalmanState.P[0][1];
-    kalmanState.P[1][1] = doc["P_aging"] | KALMAN_P_INIT_AGING;
-    kalmanState.R_estimated = doc["R_estimated"] | R_INIT;
-    kalmanState.R_measured = doc["R_measured"] | R_INIT;  // v1.5.3
+    kalmanState.P[1][1] = doc["P_aging"] | KALMAN_DEFAULT_TUNING.p_init_aging;
+    kalmanState.R_estimated = doc["R_estimated"] | KALMAN_DEFAULT_TUNING.r_init;
+    kalmanState.R_measured = doc["R_measured"] | KALMAN_DEFAULT_TUNING.r_init;  // v1.5.3
     kalmanState.confidence = doc["confidence"] | 0.0f;
     kalmanState.n_updates = doc["n_updates"] | 0;
     kalmanState.initialized = doc["initialized"] | false;

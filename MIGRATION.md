@@ -1,5 +1,13 @@
 # Migration Guide: BatteryKalman v2.1.0 (BatteryModels v1.2.0 Compatible)
 
+> **Note v1.6.0 (2026-08-04)** : la v1.6.0 est **additive** — aucune migration
+> requise. Nouveau : `getTuning()`, setters runtime (`setP`, `setQ`, `setR`,
+> `setSegmentThresholds`, `setBatteryChange`, `setRestLong`, `setConfidence`,
+> `resetTuning`) et consommation de `model->getKalmanTuning()` (BatteryModels
+> v1.4+). Sans setter ni BatteryModels v1.4+, le comportement est identique à
+> v1.5.3. Document ci-dessous : historique de migration BatteryModels v1.1.x
+> → v1.2.0.
+
 ## Summary of Changes
 
 BatteryKalman has been updated to work with **BatteryModels v1.2.0** (released July 19, 2026), which introduced advanced thermal modeling. This update required API changes due to terminology shifts in BatteryModels.

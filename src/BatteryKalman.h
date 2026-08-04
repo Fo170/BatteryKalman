@@ -28,8 +28,21 @@
  *   REST_LONG_STABLE_MS, REST_LONG_STABLE_MIN_SAMPLES,
  *   REST_LONG_STABLE_MAX_SAMPLES, REST_LONG_SYNC_MS.
  *
+ * v1.6.0 — CONFIGURATION PAR TECHNOLOGIE (consomme BatteryModels v1.4+)
+ * - getTuning() : hiérarchie de résolution centralisée
+ *     1. override runtime (setters)  >  2. model->getKalmanTuning()
+ *     >  3. macros compile-time  >  4. défaut interne (valeurs v1.5.3).
+ * - Nouveaux setters runtime : setTuning(), setP(), setQ(), setR(),
+ *   setSegmentThresholds(), setBatteryChange(), setRestLong(),
+ *   setConfidence(), resetTuning().
+ * - Seuil ΔAh relatif (seg_min_dAh_pct) pour petites batteries (NiMH/Alkaline).
+ * - Gating des segments OCV (ocv_segment_allowed=false) pour NiFe/Sodium.
+ * - REST_LONG (durées, stabilité) et confiance configurables par technologie.
+ * - Aucun breaking change : sans setter ni BatteryModels v1.4+, le
+ *   comportement est identique à v1.5.3.
+ *
  * Licence: GNU General Public License v3
- * Version: 1.5.3
+ * Version: 1.6.0
  * Date: Août 2026
  */
 
@@ -42,45 +55,53 @@
 #include "Coulomb.h"
 
 // ============================================================
-// CONFIGURATION PAR DÉFAUT
+// SURCHARGE COMPILE-TIME (OPTIONNELLE) — v1.6.0
 // ============================================================
+// Toutes les macros sont optionnelles et GLOBALES : elles écrasent le
+// tuning résolu (niveau 3 de la hiérarchie) si (et seulement si) elles
+// sont définies par l'utilisateur avant #include. Par défaut = sentinelle
+// (NAN pour les float, 0 pour les entiers) = "non définie" → le réglage du
+// modèle (niveau 2) s'applique. Les défauts réels vivent dans
+// KALMAN_DEFAULT_TUNING (niveau 4 = valeurs v1.5.3).
+// Exceptions: REST_LONG_STABLE_MAX_SAMPLES (taille compile-time de l'anneau)
+// et REST_LONG_SYNC_MS (limiteur de synchro, hors tuning).
 
 #ifndef KALMAN_P_INIT_C
-#define KALMAN_P_INIT_C         500.0f      // Variance initiale pour C (Ah²)
+#define KALMAN_P_INIT_C         NAN
 #endif
 #ifndef KALMAN_P_INIT_AGING
-#define KALMAN_P_INIT_AGING     0.000001f   // Variance initiale pour dC/dcycle
+#define KALMAN_P_INIT_AGING     NAN
 #endif
 #ifndef KALMAN_P_MIN_C
-#define KALMAN_P_MIN_C          0.10f       // Variance minimale pour C
+#define KALMAN_P_MIN_C          NAN
 #endif
 #ifndef KALMAN_P_MIN_AGING
-#define KALMAN_P_MIN_AGING      0.0000001f  // Variance minimale pour aging
+#define KALMAN_P_MIN_AGING      NAN
 #endif
 
 // Process noise (Q)
 #ifndef Q_AGING_UNCERTAINTY
-#define Q_AGING_UNCERTAINTY     0.000002f   // Incertitude sur taux aging
+#define Q_AGING_UNCERTAINTY     NAN
 #endif
 #ifndef Q_CAPACITY_DRIFT
-#define Q_CAPACITY_DRIFT        0.01f       // Dérive de capacité entre cycles
+#define Q_CAPACITY_DRIFT        NAN
 #endif
 
 // Measurement noise (R) - estimation en ligne
 #ifndef R_INIT
-#define R_INIT                  4.0f        // R initial
+#define R_INIT                  NAN
 #endif
 #ifndef R_MIN
-#define R_MIN                   0.5f        // R minimum
+#define R_MIN                   NAN
 #endif
 #ifndef R_MAX
-#define R_MAX                   100.0f      // R maximum
+#define R_MAX                   NAN
 #endif
 #ifndef R_SMOOTH_ALPHA
-#define R_SMOOTH_ALPHA          0.1f        // Lissage exponentiel R_estimate
+#define R_SMOOTH_ALPHA          NAN
 #endif
 
-// Phases d'apprentissage (legacy, moins utilisées)
+// Phases d'apprentissage (legacy, conservées)
 #ifndef PHASE1_P_THRESHOLD
 #define PHASE1_P_THRESHOLD      30.0f
 #endif
@@ -90,27 +111,27 @@
 
 // Seuils segments
 #ifndef SEG_MIN_DAH
-#define SEG_MIN_DAH             0.20f
+#define SEG_MIN_DAH             NAN
 #endif
 #ifndef SEG_MIN_DSOC_P0
-#define SEG_MIN_DSOC_P0         3.0f
+#define SEG_MIN_DSOC_P0         NAN
 #endif
 #ifndef SEG_MIN_DSOC_P1
-#define SEG_MIN_DSOC_P1         5.0f
+#define SEG_MIN_DSOC_P1         NAN
 #endif
 #ifndef SEG_MIN_DSOC_P2
-#define SEG_MIN_DSOC_P2         8.0f
+#define SEG_MIN_DSOC_P2         NAN
 #endif
 #ifndef SEG_DSOC_HIGH_CONF
-#define SEG_DSOC_HIGH_CONF      15.0f
+#define SEG_DSOC_HIGH_CONF      NAN
 #endif
 
 // Seuils de batterie changée
 #ifndef BATTERY_CHANGE_THR
-#define BATTERY_CHANGE_THR      0.30f       // 30% écart = batterie changée
+#define BATTERY_CHANGE_THR      NAN
 #endif
 #ifndef BATTERY_CHANGE_COUNT
-#define BATTERY_CHANGE_COUNT    3           // 3 outliers = batterie changée
+#define BATTERY_CHANGE_COUNT    0
 #endif
 
 // ============================================================
@@ -125,23 +146,56 @@
 // Indépendant du rythme d'échantillonnage (10 Hz, 1 Hz, 5 min...).
 
 #ifndef REST_LONG_MIN_MS
-#define REST_LONG_MIN_MS        900000UL    // 15 min min de repos avant référence OCV
+#define REST_LONG_MIN_MS        0UL         // sentinelle (ms) — remplacé par rest_long_min_min (min) du tuning
 #endif
 #ifndef REST_LONG_STABLE_MV
-#define REST_LONG_STABLE_MV     0.020f      // écart tension crête (V) toléré sur la fenêtre
+#define REST_LONG_STABLE_MV     NAN         // écart tension crête (V) toléré sur la fenêtre
 #endif
 #ifndef REST_LONG_STABLE_MS
-#define REST_LONG_STABLE_MS     1800000UL   // fenêtre temporelle de stabilité (30 min)
+#define REST_LONG_STABLE_MS     0UL         // sentinelle (ms) — remplacé par rest_long_stable_min (min) du tuning
 #endif
 #ifndef REST_LONG_STABLE_MIN_SAMPLES
-#define REST_LONG_STABLE_MIN_SAMPLES 6      // nb min d'échantillons dans la fenêtre
+#define REST_LONG_STABLE_MIN_SAMPLES 0      // sentinelle — nb min d'échantillons du tuning
 #endif
 #ifndef REST_LONG_STABLE_MAX_SAMPLES
-#define REST_LONG_STABLE_MAX_SAMPLES 32     // taille max de l'anneau (sécurité mémoire)
+#define REST_LONG_STABLE_MAX_SAMPLES 32     // taille max de l'anneau (sécurité mémoire, compile-time)
 #endif
 #ifndef REST_LONG_SYNC_MS
-#define REST_LONG_SYNC_MS       1800000UL   // délai entre 2 synchros REST_LONG
+#define REST_LONG_SYNC_MS       1800000UL   // délai entre 2 synchros REST_LONG (hors tuning)
 #endif
+
+// ============================================================
+// DÉFAUT INTERNE (niveau 4 de la hiérarchie) — valeurs v1.5.3
+// ============================================================
+static const KalmanTuning KALMAN_DEFAULT_TUNING = {
+    500.0f,     // p_init_C
+    0.10f,      // p_min_C
+    0.000001f,  // p_init_aging
+    0.0000001f, // p_min_aging
+    0.000002f,  // q_aging_uncertainty
+    0.01f,      // q_capacity_drift
+    4.0f,       // r_init
+    0.5f,       // r_min
+    100.0f,     // r_max
+    0.1f,       // r_smooth_alpha
+    0.20f,      // seg_min_dAh_abs
+    0.0f,       // seg_min_dAh_pct (désactivé : seuil absolu seul)
+    {3.0f, 5.0f, 8.0f},   // seg_min_dsoc[3]
+    15.0f,      // seg_dsoc_high_conf
+    true,       // ocv_segment_allowed
+    0.30f,      // battery_change_thr
+    3,          // battery_change_count
+    15.0f,      // rest_long_min_min (min)
+    0.020f,     // rest_long_stable_mv (V)
+    30.0f,      // rest_long_stable_min (min)
+    6,          // rest_long_stable_min_samples
+    32,         // rest_long_stable_max_samples
+    0.95f,      // conf_float
+    0.70f,      // conf_rest_base
+    0.15f,      // conf_rest_span
+    0.30f,      // conf_phase_coarse
+    0.60f       // conf_phase_refine
+};
 
 // ============================================================
 // PHASES D'APPRENTISSAGE (Legacy - pour compatibilité)
@@ -191,12 +245,14 @@ struct KalmanState2D {
     float    dC_dCycle = -0.0005f;      // Taux vieillissement (Ah/cycle)
 
     // Covariance P[2x2] = [[P_CC, P_Caging], [P_agingC, P_aging]]
-    float    P[2][2] = {{KALMAN_P_INIT_C, 0},
-                        {0, KALMAN_P_INIT_AGING}};
+    // (valeurs v1.5.3 — remplacées à begin()/resetLearning() par le tuning)
+    float    P[2][2] = {{500.0f, 0},
+                        {0, 0.000001f}};
 
     // Estimation en ligne de R
-    float    R_estimated = R_INIT;      // R estimé depuis innovations
-    float    R_measured = R_INIT;       // R actuel pour mesure (F3: désormais mis à jour)
+    // (valeurs v1.5.3 — remplacées à begin()/resetLearning() par le tuning)
+    float    R_estimated = 4.0f;      // R estimé depuis innovations
+    float    R_measured = 4.0f;       // R actuel pour mesure (F3: désormais mis à jour)
 
     uint16_t n_updates = 0;             // Nombre mises à jour
     bool     initialized = false;
@@ -269,6 +325,77 @@ private:
     float last_cycles = 0.0f;           // Pour calcul delta_cycles
 
     // ============================================================
+    // TUNING PAR TECHNOLOGIE (v1.6.0)
+    // ============================================================
+    // Hiérarchie de résolution (du plus fort au plus faible) :
+    //   1. override runtime (setters)          -> _tuningOverride
+    //   2. model->getKalmanTuning()            -> _tuningFromModel
+    //   3. macros compile-time (optionnelles)  -> KALMAN_*_MACRO
+    //   4. défaut interne                      -> KALMAN_DEFAULT_TUNING
+    // _tuningResolved est re-résolu à chaque getTuning() (léger) : les
+    // changements de technologie du modèle sont donc pris en compte.
+    KalmanTuning _tuningOverride;
+    KalmanTuning _tuningFromModel;
+    KalmanTuning _tuningResolved;
+    bool _tuningOverrideSet = false;
+
+    void _tuningResolve() {
+        KalmanTuning t = KALMAN_DEFAULT_TUNING;
+        if (_tuningOverrideSet) {
+            // setter runtime (niveau 1) : remplace tout, y compris les macros
+            t = _tuningOverride;
+        } else if (model) {
+            const KalmanTuning& mt = model->getKalmanTuning();
+            t = mt;
+            _tuningFromModel = mt;
+            // macros compile-time (niveau 3) > modèle (niveau 2)
+            _applyMacroOverrides(t);
+        } else {
+            // macros compile-time (niveau 3) > défaut interne (niveau 4)
+            _applyMacroOverrides(t);
+        }
+        _tuningResolved = t;
+    }
+
+    void _applyMacroOverrides(KalmanTuning& t) const {
+        if (KALMAN_P_INIT_C == KALMAN_P_INIT_C)       t.p_init_C = KALMAN_P_INIT_C;
+        if (KALMAN_P_INIT_AGING == KALMAN_P_INIT_AGING) t.p_init_aging = KALMAN_P_INIT_AGING;
+        if (KALMAN_P_MIN_C == KALMAN_P_MIN_C)         t.p_min_C = KALMAN_P_MIN_C;
+        if (KALMAN_P_MIN_AGING == KALMAN_P_MIN_AGING) t.p_min_aging = KALMAN_P_MIN_AGING;
+        if (Q_AGING_UNCERTAINTY == Q_AGING_UNCERTAINTY) t.q_aging_uncertainty = Q_AGING_UNCERTAINTY;
+        if (Q_CAPACITY_DRIFT == Q_CAPACITY_DRIFT)     t.q_capacity_drift = Q_CAPACITY_DRIFT;
+        if (R_INIT == R_INIT)                         t.r_init = R_INIT;
+        if (R_MIN == R_MIN)                           t.r_min = R_MIN;
+        if (R_MAX == R_MAX)                           t.r_max = R_MAX;
+        if (R_SMOOTH_ALPHA == R_SMOOTH_ALPHA)         t.r_smooth_alpha = R_SMOOTH_ALPHA;
+        if (SEG_MIN_DAH == SEG_MIN_DAH)               t.seg_min_dAh_abs = SEG_MIN_DAH;
+        if (SEG_MIN_DSOC_P0 == SEG_MIN_DSOC_P0)       t.seg_min_dsoc[0] = SEG_MIN_DSOC_P0;
+        if (SEG_MIN_DSOC_P1 == SEG_MIN_DSOC_P1)       t.seg_min_dsoc[1] = SEG_MIN_DSOC_P1;
+        if (SEG_MIN_DSOC_P2 == SEG_MIN_DSOC_P2)       t.seg_min_dsoc[2] = SEG_MIN_DSOC_P2;
+        if (SEG_DSOC_HIGH_CONF == SEG_DSOC_HIGH_CONF) t.seg_dsoc_high_conf = SEG_DSOC_HIGH_CONF;
+        if (BATTERY_CHANGE_THR == BATTERY_CHANGE_THR) t.battery_change_thr = BATTERY_CHANGE_THR;
+        if (BATTERY_CHANGE_COUNT != 0)                t.battery_change_count = BATTERY_CHANGE_COUNT;
+        if (REST_LONG_STABLE_MV == REST_LONG_STABLE_MV) t.rest_long_stable_mv = REST_LONG_STABLE_MV;
+        if (REST_LONG_MIN_MS != 0UL)                  t.rest_long_min_min = (float)(REST_LONG_MIN_MS / 60000UL);
+        if (REST_LONG_STABLE_MS != 0UL)               t.rest_long_stable_min = (float)(REST_LONG_STABLE_MS / 60000UL);
+        if (REST_LONG_STABLE_MIN_SAMPLES != 0)        t.rest_long_stable_min_samples = REST_LONG_STABLE_MIN_SAMPLES;
+    }
+
+    // Helpers ms (conversions depuis le tuning)
+    uint32_t _restLongMinMs() {
+        const KalmanTuning& t = getTuning();
+        return (uint32_t)(t.rest_long_min_min * 60000.0f);
+    }
+    uint32_t _restLongStableMs() {
+        const KalmanTuning& t = getTuning();
+        return (uint32_t)(t.rest_long_stable_min * 60000.0f);
+    }
+    uint8_t _restLongMinSamples() {
+        const KalmanTuning& t = getTuning();
+        return t.rest_long_stable_min_samples;
+    }
+
+    // ============================================================
     // MÉTHODES PRIVÉES - KALMAN 2D
     // ============================================================
 
@@ -300,14 +427,15 @@ private:
         float P10_new = FP10 + FP11 * F01;
         float P11_new = FP11;
 
-        // Process noise Q
-        float Q_C = Q_AGING_UNCERTAINTY * delta_cycles + Q_CAPACITY_DRIFT;
-        float Q_aging = Q_AGING_UNCERTAINTY;
+        // Process noise Q (v1.6.0: par technologie)
+        const KalmanTuning& t = getTuning();
+        float Q_C = t.q_aging_uncertainty * delta_cycles + t.q_capacity_drift;
+        float Q_aging = t.q_aging_uncertainty;
 
-        kalman->P[0][0] = min(P00_new + Q_C, KALMAN_P_INIT_C);
+        kalman->P[0][0] = min(P00_new + Q_C, t.p_init_C);
         kalman->P[0][1] = P01_new;
         kalman->P[1][0] = P10_new;
-        kalman->P[1][1] = min(P11_new + Q_aging, KALMAN_P_INIT_AGING);
+        kalman->P[1][1] = min(P11_new + Q_aging, t.p_init_aging);
     }
 
     void applyKalmanUpdate2D(float C_measured, float R, float delta_cycles) {
@@ -315,7 +443,7 @@ private:
             kalman->C_hat = C_measured;
             kalman->dC_dCycle = -0.0005f;  // Valeur par défaut
             kalman->P[0][0] = R;
-            kalman->P[1][1] = Q_AGING_UNCERTAINTY;
+            kalman->P[1][1] = getTuning().q_aging_uncertainty;
             kalman->initialized = true;
             kalman->n_updates = 1;
             kalman->confidence = 0.2f;
@@ -336,17 +464,18 @@ private:
         if (S <= 0) S = R;
 
         // Détection outlier 3-sigma
+        const KalmanTuning& t = getTuning();
         float sigma = sqrtf(S);
         if (fabsf(innovation) > 3.0f * sigma) {
             kalman->outlier_streak++;
 
             // Batterie changée? (n outliers + magnitude check)
-            if (kalman->outlier_streak >= BATTERY_CHANGE_COUNT &&
-                fabsf(innovation) > BATTERY_CHANGE_THR * kalman->C_hat) {
+            if (kalman->outlier_streak >= t.battery_change_count &&
+                fabsf(innovation) > t.battery_change_thr * kalman->C_hat) {
                 kalman->C_hat = C_measured;
                 kalman->dC_dCycle = -0.0005f;
                 kalman->P[0][0] = R * 2.0f;
-                kalman->P[1][1] = Q_AGING_UNCERTAINTY * 5.0f;
+                kalman->P[1][1] = t.q_aging_uncertainty * 5.0f;
                 kalman->n_updates = 3;
                 kalman->confidence = 0.1f;
                 kalman->outlier_streak = 0;
@@ -358,7 +487,7 @@ private:
 
             // Outlier: double P (mais pas trop)
             kalman->P[0][0] *= 2.0f;
-            kalman->P[1][1] = min(kalman->P[1][1] * 1.5f, Q_AGING_UNCERTAINTY * 10.0f);
+            kalman->P[1][1] = min(kalman->P[1][1] * 1.5f, t.q_aging_uncertainty * 10.0f);
             updatePhaseFromConfidence();
             state_dirty = true;
             return;
@@ -381,10 +510,10 @@ private:
         float P_aC_new = kalman->P[1][0] - K_aging * kalman->P[0][0];
         float P_aa_new = kalman->P[1][1] - K_aging * kalman->P[0][1];
 
-        kalman->P[0][0] = max(KALMAN_P_MIN_C, P_CC_new);
+        kalman->P[0][0] = max(getTuning().p_min_C, P_CC_new);
         kalman->P[0][1] = P_Ca_new;
         kalman->P[1][0] = P_aC_new;
-        kalman->P[1][1] = max(KALMAN_P_MIN_AGING, P_aa_new);
+        kalman->P[1][1] = max(getTuning().p_min_aging, P_aa_new);
 
         kalman->n_updates++;
 
@@ -393,7 +522,7 @@ private:
 
         // Confiance croît avec n_updates et P décroît
         float n_factor = min(1.0f, (float)kalman->n_updates / 10.0f);
-        float p_factor = 1.0f - min(1.0f, kalman->P[0][0] / KALMAN_P_INIT_C);
+        float p_factor = 1.0f - min(1.0f, kalman->P[0][0] / getTuning().p_init_C);
         kalman->confidence = (n_factor + p_factor) * 0.5f;
 
         updatePhaseFromConfidence();
@@ -415,12 +544,13 @@ private:
 
         if (kalman->innovation_count >= 5) {  // Moyenner sur 5 innovations
             float innovation_var = kalman->innovation_sum_sq / kalman->innovation_count;
-            float R_est = max(R_MIN, innovation_var - kalman->P[0][0]);
+            const KalmanTuning& t = getTuning();
+            float R_est = max(t.r_min, innovation_var - kalman->P[0][0]);
 
             // Lissage exponentiel
-            kalman->R_estimated = R_SMOOTH_ALPHA * R_est +
-                                  (1.0f - R_SMOOTH_ALPHA) * kalman->R_estimated;
-            kalman->R_estimated = constrain(kalman->R_estimated, R_MIN, R_MAX);
+            kalman->R_estimated = t.r_smooth_alpha * R_est +
+                                  (1.0f - t.r_smooth_alpha) * kalman->R_estimated;
+            kalman->R_estimated = constrain(kalman->R_estimated, t.r_min, t.r_max);
 
             // --- F3 CORRECTION: appliquer R adaptatif aux futures mesures ---
             kalman->R_measured = kalman->R_estimated;
@@ -433,11 +563,12 @@ private:
 
     void updatePhaseFromConfidence() {
         // Legacy: mapper confiance en phases discrètes
+        const KalmanTuning& t = getTuning();
         if (!kalman->initialized) {
             phase = PHASE_BOOTSTRAP;
-        } else if (kalman->confidence < 0.3f) {
+        } else if (kalman->confidence < t.conf_phase_coarse) {
             phase = PHASE_COARSE;
-        } else if (kalman->confidence < 0.6f) {
+        } else if (kalman->confidence < t.conf_phase_refine) {
             phase = PHASE_REFINE;
         } else {
             phase = PHASE_TRACK;
@@ -469,8 +600,9 @@ private:
 
         // --- F8: porte de stabilité pour REST -> REST_LONG ---
         // On alimente un anneau (temps, tension); REST_LONG n'est atteint
-        // que si (a) repos >= REST_LONG_MIN_MS, et (b) tension stable sur la
-        // fenêtre temporelle REST_LONG_STABLE_MS (écart crête < STABLE_MV).
+        // que si (a) repos >= rest_long_min_min (tuning), et (b) tension
+        // stable sur la fenêtre rest_long_stable_min (écart crête <
+        // rest_long_stable_mv). Durées config par technologie (v1.6.0).
         if (mppt_state == State_REST) {
             rest_v_ring[rest_v_count % REST_LONG_STABLE_MAX_SAMPLES] = V;
             rest_v_ring_ms[rest_v_count % REST_LONG_STABLE_MAX_SAMPLES] = millis();
@@ -479,7 +611,8 @@ private:
 
             // Conserver uniquement les échantillons dans la fenêtre temporelle
             // et calculer l'écart crête (ptp) sur ceux-ci.
-            uint32_t cutoff = millis() - REST_LONG_STABLE_MS;
+            uint32_t stable_ms = _restLongStableMs();
+            uint32_t cutoff = millis() - stable_ms;
             float v_min = 9999.0f, v_max = -9999.0f;
             uint8_t kept = 0;
             for (uint8_t i = 0; i < REST_LONG_STABLE_MAX_SAMPLES; i++) {
@@ -489,9 +622,10 @@ private:
                 v_max = max(v_max, rest_v_ring[i]);
                 kept++;
             }
-            bool time_ok = (millis() - state_entry_ms >= REST_LONG_MIN_MS);
-            bool stable_ok = (kept >= REST_LONG_STABLE_MIN_SAMPLES)
-                          && (v_max - v_min <= REST_LONG_STABLE_MV);
+            const KalmanTuning& t = getTuning();
+            bool time_ok = (millis() - state_entry_ms >= _restLongMinMs());
+            bool stable_ok = (kept >= t.rest_long_stable_min_samples)
+                          && (v_max - v_min <= t.rest_long_stable_mv);
             rest_stable = stable_ok;
 
             if (time_ok && stable_ok) {
@@ -506,16 +640,18 @@ private:
 
     void handleSyncEvents(float V_cell_ocv) {
         float total_ocv = V_cell_ocv * model->getCellCount();
+        const KalmanTuning& t = getTuning();
 
         // F1: ces transitions sont maintenant réellement détectées
         if (mppt_state == State_FLOAT && mppt_state_prev != State_FLOAT) {
-            doSync(100.0f, 0.95f, "Float charge");
+            doSync(100.0f, t.conf_float, "Float charge");
             return;
         }
 
         if (mppt_state == State_REST_LONG && millis() - data->last_sync_time > REST_LONG_SYNC_MS) {
-            uint32_t extra = millis() - state_entry_ms - REST_LONG_MIN_MS;
-            float conf = 0.70f + 0.15f * min(1.0f, extra / (float)REST_LONG_MIN_MS);
+            uint32_t rest_min_ms = _restLongMinMs();
+            uint32_t extra = millis() - state_entry_ms - rest_min_ms;
+            float conf = t.conf_rest_base + t.conf_rest_span * min(1.0f, extra / (float)rest_min_ms);
             doSync(data->SoC_voltage, conf, "Long rest OCV");
             return;
         }
@@ -610,7 +746,8 @@ private:
     void updateSegmentAndKalman(float I, float delta_cycles) {
         if (!seg.active) {
             if (mppt_state == State_FLOAT || mppt_state == State_REST_LONG) {
-                float conf = (mppt_state == State_FLOAT) ? 0.95f : 0.75f;
+                const KalmanTuning& t = getTuning();
+                float conf = (mppt_state == State_FLOAT) ? t.conf_float : (t.conf_rest_base + t.conf_rest_span);
                 startNewSegment(data->SoC_fused, conf);
             }
             return;
@@ -631,25 +768,39 @@ private:
 
         // F1: transitions détectées (plus de code mort)
         if (mppt_state == State_FLOAT && mppt_state_prev != State_FLOAT) {
-            SoC_end = 100.0f; conf_end = 0.95f; close = true;
+            SoC_end = 100.0f; conf_end = getTuning().conf_float; close = true;
         } else if (mppt_state == State_REST_LONG && mppt_state_prev != State_REST_LONG) {
             // F5 + F8: fermeture par transition REST_LONG (porte de stabilité)
-            uint32_t extra = millis() - state_entry_ms - REST_LONG_MIN_MS;
+            const KalmanTuning& t = getTuning();
+            uint32_t rest_min_ms = _restLongMinMs();
+            uint32_t extra = millis() - state_entry_ms - rest_min_ms;
             SoC_end = data->SoC_voltage;
-            conf_end = 0.70f + 0.15f * min(1.0f, extra / (float)REST_LONG_MIN_MS);
+            conf_end = t.conf_rest_base + t.conf_rest_span * min(1.0f, extra / (float)rest_min_ms);
             close = true;
         }
 
         if (!close) return;
 
+        // v1.6.0: gating OCV — segments désactivés pour NiFe/Sodium
+        // (OCV peu fiable) sauf si overridé via setSegmentThresholds()
+        if (!getTuning().ocv_segment_allowed) return;
+
         float dAh = fabsf(coulombMeter->getAmpereHours() - seg.Ah_start);
         float dSoC = fabsf(SoC_end - seg.SoC_start);
 
-        float min_dSoC = SEG_MIN_DSOC_P1;
-        if (phase == PHASE_BOOTSTRAP) min_dSoC = SEG_MIN_DSOC_P0;
-        if (phase == PHASE_REFINE || phase == PHASE_TRACK) min_dSoC = SEG_MIN_DSOC_P2;
+        const KalmanTuning& t2 = getTuning();
+        float min_dSoC = t2.seg_min_dsoc[1];
+        if (phase == PHASE_BOOTSTRAP) min_dSoC = t2.seg_min_dsoc[0];
+        if (phase == PHASE_REFINE || phase == PHASE_TRACK) min_dSoC = t2.seg_min_dsoc[2];
 
-        if (dAh < SEG_MIN_DAH || dSoC < min_dSoC || seg.n == 0) {
+        // v1.6.0: seuil relatif (% de C) pour petites batteries (NiMH/Alkaline)
+        float dAh_threshold = t2.seg_min_dAh_abs;
+        float C_ref = getEffectiveCapacity();
+        if (t2.seg_min_dAh_pct > 0.0f && C_ref > 0.0f) {
+            dAh_threshold = max(dAh_threshold, t2.seg_min_dAh_pct * C_ref / 100.0f);
+        }
+
+        if (dAh < dAh_threshold || dSoC < min_dSoC || seg.n == 0) {
             startNewSegment(SoC_end, conf_end);
             return;
         }
@@ -808,17 +959,18 @@ public:
     }
 
     void resetLearning() {
+        const KalmanTuning& t = getTuning();
         kalman->C_hat = 0.0f;
         kalman->dC_dCycle = -0.0005f;
-        kalman->P[0][0] = KALMAN_P_INIT_C;
+        kalman->P[0][0] = t.p_init_C;
         kalman->P[0][1] = 0.0f;
         kalman->P[1][0] = 0.0f;
-        kalman->P[1][1] = KALMAN_P_INIT_AGING;
+        kalman->P[1][1] = t.p_init_aging;
         kalman->n_updates = 0;
         kalman->initialized = false;
         kalman->confidence = 0.0f;
-        kalman->R_estimated = R_INIT;
-        kalman->R_measured = R_INIT;
+        kalman->R_estimated = t.r_init;
+        kalman->R_measured = t.r_init;
         phase = PHASE_BOOTSTRAP;
         state_dirty = true;
     }
@@ -880,6 +1032,91 @@ public:
     const char* getPhaseInfo() { return phase_info; }
     const char* getLastSyncInfo() { return last_sync_info; }
     const char* getLastLearnInfo() { return last_learn_info; }
+
+    // ============================================================
+    // TUNING PAR TECHNOLOGIE (v1.6.0) — API publique
+    // ============================================================
+    // Résolution : setter runtime > model->getKalmanTuning() > macro
+    // compile-time > KALMAN_DEFAULT_TUNING (v1.5.3).
+    // Re-résout à chaque appel : un model->setTechnology() ultérieur est
+    // automatiquement pris en compte (tant qu'aucun setter n'est actif).
+    const KalmanTuning& getTuning() {
+        _tuningResolve();
+        return _tuningResolved;
+    }
+
+    // Désactive les setters runtime et revient au modèle/macros/défaut.
+    void resetTuning() {
+        _tuningOverrideSet = false;
+    }
+
+    // Remplace intégralement le tuning (tous les champs).
+    void setTuning(const KalmanTuning& t) {
+        _tuningOverride = t;
+        _tuningOverrideSet = true;
+    }
+
+    void setP(float p_init_C, float p_min_C,
+              float p_init_aging, float p_min_aging) {
+        if (!_tuningOverrideSet) { _tuningOverride = getTuning(); _tuningOverrideSet = true; }
+        _tuningOverride.p_init_C = p_init_C;
+        _tuningOverride.p_min_C = p_min_C;
+        _tuningOverride.p_init_aging = p_init_aging;
+        _tuningOverride.p_min_aging = p_min_aging;
+    }
+
+    void setQ(float q_aging_uncertainty, float q_capacity_drift) {
+        if (!_tuningOverrideSet) { _tuningOverride = getTuning(); _tuningOverrideSet = true; }
+        _tuningOverride.q_aging_uncertainty = q_aging_uncertainty;
+        _tuningOverride.q_capacity_drift = q_capacity_drift;
+    }
+
+    void setR(float r_init, float r_min, float r_max, float r_smooth_alpha) {
+        if (!_tuningOverrideSet) { _tuningOverride = getTuning(); _tuningOverrideSet = true; }
+        _tuningOverride.r_init = r_init;
+        _tuningOverride.r_min = r_min;
+        _tuningOverride.r_max = r_max;
+        _tuningOverride.r_smooth_alpha = r_smooth_alpha;
+    }
+
+    void setSegmentThresholds(float seg_min_dAh_abs, float seg_min_dAh_pct,
+                              float seg_min_dsoc0, float seg_min_dsoc1,
+                              float seg_min_dsoc2, float seg_dsoc_high_conf,
+                              bool ocv_segment_allowed) {
+        if (!_tuningOverrideSet) { _tuningOverride = getTuning(); _tuningOverrideSet = true; }
+        _tuningOverride.seg_min_dAh_abs = seg_min_dAh_abs;
+        _tuningOverride.seg_min_dAh_pct = seg_min_dAh_pct;
+        _tuningOverride.seg_min_dsoc[0] = seg_min_dsoc0;
+        _tuningOverride.seg_min_dsoc[1] = seg_min_dsoc1;
+        _tuningOverride.seg_min_dsoc[2] = seg_min_dsoc2;
+        _tuningOverride.seg_dsoc_high_conf = seg_dsoc_high_conf;
+        _tuningOverride.ocv_segment_allowed = ocv_segment_allowed;
+    }
+
+    void setBatteryChange(float thr, uint8_t count) {
+        if (!_tuningOverrideSet) { _tuningOverride = getTuning(); _tuningOverrideSet = true; }
+        _tuningOverride.battery_change_thr = thr;
+        _tuningOverride.battery_change_count = count;
+    }
+
+    void setRestLong(float min_min, float stable_mv, float stable_min,
+                     uint8_t min_samples) {
+        if (!_tuningOverrideSet) { _tuningOverride = getTuning(); _tuningOverrideSet = true; }
+        _tuningOverride.rest_long_min_min = min_min;
+        _tuningOverride.rest_long_stable_mv = stable_mv;
+        _tuningOverride.rest_long_stable_min = stable_min;
+        _tuningOverride.rest_long_stable_min_samples = min_samples;
+    }
+
+    void setConfidence(float conf_float, float conf_rest_base, float conf_rest_span,
+                       float conf_phase_coarse, float conf_phase_refine) {
+        if (!_tuningOverrideSet) { _tuningOverride = getTuning(); _tuningOverrideSet = true; }
+        _tuningOverride.conf_float = conf_float;
+        _tuningOverride.conf_rest_base = conf_rest_base;
+        _tuningOverride.conf_rest_span = conf_rest_span;
+        _tuningOverride.conf_phase_coarse = conf_phase_coarse;
+        _tuningOverride.conf_phase_refine = conf_phase_refine;
+    }
 
     // ============================================================
     // PERSISTANCE

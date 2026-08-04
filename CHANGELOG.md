@@ -1,5 +1,49 @@
 # Changelog - BatteryKalman
 
+## [1.6.0] - 2026-08-04
+
+### ✨ Configuration par technologie (consomme BatteryModels v1.4+)
+
+Le filtre consomme désormais `model->getKalmanTuning()` : les paramètres
+P, Q, R, les seuils de segment, la détection de batterie changée, la porte
+REST_LONG et la confiance sont réglés **par technologie** depuis
+BatteryModels (valeurs calibrées dans `TECH_PARAMS[]`).
+
+### 🔀 Hiérarchie de résolution centralisée (`getTuning()`)
+
+1. **Setter runtime** (nouveaux) : `setTuning()`, `setP()`, `setQ()`,
+   `setR()`, `setSegmentThresholds()`, `setBatteryChange()`, `setRestLong()`,
+   `setConfidence()`, `resetTuning()`.
+2. **Modèle** : `model->getKalmanTuning()` (défaut par technologie).
+3. **Macros compile-time** : `KALMAN_P_INIT_C`, `R_INIT`, `SEG_MIN_DAH`, etc.
+   — désormais **optionnelles** (défaut = sentinelle `NAN`/`0` = "non
+   définie"). Les valeurs réelles par défaut vivent dans
+   `KALMAN_DEFAULT_TUNING` (équivalent v1.5.3). Les macros restent un moyen
+   global de forcer un réglage avant `#include`.
+4. **Défaut interne** : `KALMAN_DEFAULT_TUNING` (valeurs v1.5.3 inchangées).
+
+La résolution est re-faite à chaque `getTuning()` : un
+`model->setTechnology()` ultérieur est donc automatiquement pris en compte.
+
+### ➕ Nouveautés fonctionnelles
+
+- **Seuil ΔAh relatif** (`seg_min_dAh_pct`, % de C) : utile pour les petites
+  batteries (NiMH/Alkaline). Le seuil effectif est `max(seuil_absolu, pct × C)`.
+- **Gating des segments OCV** (`ocv_segment_allowed=false`) : les segments
+  ΔAh/ΔSoC sont désactivés pour NiFe/Sodium (OCV peu fiable).
+- **REST_LONG** (durée minimale, fenêtre de stabilité, écart crête, nb
+  d'échantillons) et **confiance** (FLOAT, REST_LONG, seuils de phase)
+  configurables par technologie via le tuning.
+
+### 🔁 Rétro-compatibilité
+
+- **Aucun breaking change** : sans setter ni BatteryModels v1.4+, le
+  comportement est strictement identique à v1.5.3 (défauts internes).
+- `KalmanState2D` : les valeurs initiales de P et R sont les constantes
+  v1.5.3 (plus de dépendance aux macros sentinelles).
+- L'exemple `Exemples/avec_persistance/` utilise `KALMAN_DEFAULT_TUNING`
+  comme défauts de chargement (les macros valent désormais `NAN` par défaut).
+
 ## [1.5.3] - 2026-08-03
 
 ### 🐛 Corrections de bugs (v1.5.2) + Porte de stabilité REST (F8)

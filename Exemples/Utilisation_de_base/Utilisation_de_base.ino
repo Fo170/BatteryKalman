@@ -18,7 +18,7 @@ void setup() {
     // Initialisation
     battery.begin();
 
-    Serial.println("BatteryKalman v1.5.3 démarré");
+    Serial.println("BatteryKalman v1.6.0 démarré");
     Serial.print("Technologie: ");
     Serial.println(model.getTechnologyName());
 }
@@ -42,7 +42,7 @@ void loop() {
         //    ensuite lu par battery.update())
         coulomb.update(current);
 
-        // 2) Mise à jour Kalman — API v1.5.3: update(V, I, T)
+        // 2) Mise à jour Kalman — API v1.6.0: update(V, I, T)
         battery.update(voltage, current, temp);
 
         // Résultats
