@@ -100,4 +100,4 @@ If you encounter issues:
 1. Check that BatteryModels v1.2.0+ is installed
 2. Verify `#include <BatteryModels.h>` points to v1.2.0
 3. Ensure no old `MPPT_` enum values remain in your code
-4. See CLAUDE.md for detailed API documentation
+4. See the workspace root `AGENTS.md` for detailed API documentation
