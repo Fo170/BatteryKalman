@@ -24,7 +24,8 @@
 - État 2D : `[C_hat, dC_dCycle]`, `P_INIT_C = 500`, `P_INIT_AGING = 1e-6`
 - `Q_aging = 2e-6 × Δcycles`, `R` borné `[0,5 ; 100]`, lissage α = 0,1
 - Segment valide : `dAh ≥ 0,20 Ah`, `dSoC ≥ 3 %` (bootstrap) / 5 % / 8 %
-- Fermeture de segment : **FLOAT** (SoC=100 %, conf 95 %) ou **REST_LONG** (repos > 2 h)
+- Fermeture de segment : **FLOAT** (référence SoC=100 % via coulomb, conf 95 %) ou **REST_LONG** (repos > 2 h)
+- ⚠️ Fusion en FLOAT : `fuseSoC()` donne `alpha=0` à l'état FLOAT → le **SoC fusionné affiché suit la tension** (ex. 90 % à 3,45 V/cell sur la table OCV LiFePO4), tandis que la **référence « plein » (SoC_coulomb=100 %)** est posée par la synchro FLOAT et sert de base aux décharges suivantes.
 - Outliers 3σ ; remplacement batterie si 3 outliers consécutifs et écart > 30 %
 
 ---

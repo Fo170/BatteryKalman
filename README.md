@@ -60,7 +60,7 @@ BatteryKalman **REQUIRE** une classe implémentant l'interface `BatteryModel`.
 lib_deps = 
     Fo170/BatteryModels >= 1.4    # ← Implémentation BatteryModel (recommandée)
     Fo170/BatteryKalman >= 1.6.0    # Extended Kalman Filter
-    Fo170/Coulomb >= 1.0             # Compteur coulombs (optionnel)
+    Fo170/CoulombAh >= 1.0            # Compteur coulombs (Coulomb.h)
 ```
 
 ### Installation (Arduino IDE)

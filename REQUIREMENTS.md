@@ -88,7 +88,7 @@ lib_deps =
 
 **Purpose**: Ampere-hour integration over time
 
-**GitHub**: [Fo170/Coulomb](https://github.com/Fo170/Coulomb)
+**GitHub**: [Fo170/CoulombAh](https://github.com/Fo170/CoulombAh) — header `Coulomb.h`, API `addMeasurement(current)` (intègre I×dt via micros())
 
 **Status**: Optional si vous implémentez votre propre coulomb counter
 

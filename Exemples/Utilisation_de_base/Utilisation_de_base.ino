@@ -36,11 +36,12 @@ void loop() {
         float current = readCurrent();   // À implémenter
         float temp = readTemperature();  // À implémenter
 
-        // 1) Alimenter le compteur coulomb avec le courant (intègre Ah,
-        //    mémorise dt via millis). API: coulomb.update(current).
-        //    (selon ton implémentation de Coulomb; getLastInterval() est
-        //    ensuite lu par battery.update())
-        coulomb.update(current);
+        // 1) Alimenter le compteur coulomb avec le courant. CoulombAh v1.0.0
+        //    intègre I*dt en interne (API: addMeasurement(current) — utilise
+        //    micros() pour le dt). getLastInterval() est ensuite lu par
+        //    battery.update(). Utilisez addMeasurementWithInterval(I, dt_s)
+        //    si vous fournissez l'intervalle vous-même.
+        coulomb.addMeasurement(current);
 
         // 2) Mise à jour Kalman — API v1.6.0: update(V, I, T)
         battery.update(voltage, current, temp);

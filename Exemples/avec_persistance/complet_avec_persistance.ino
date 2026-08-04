@@ -31,9 +31,9 @@ void loop() {
         float current = readINA226();  // Votre lecture INA226
         float temp = 25.0;
 
-        // 1) Alimenter le compteur coulomb (intègre Ah, mémorise dt).
-        //    API v1.6.0: coulomb.update(current) — selon ton implémentation.
-        coulomb.update(current);
+        // 1) Alimenter le compteur coulomb (CoulombAh v1.0.0 : addMeasurement()
+        //    intègre I*dt via micros(); getLastInterval() lu par battery.update()).
+        coulomb.addMeasurement(current);
 
         // 2) Mise à jour Kalman — API v1.6.0: update(V, I, T)
         battery.update(voltage, current, temp);
