@@ -36,7 +36,7 @@ void loop() {
         float current = readCurrent();   // À implémenter
         float temp = readTemperature();  // À implémenter
 
-        // 1) Alimenter le compteur coulomb avec le courant. CoulombAh v1.0.0
+        // 1) Alimenter le compteur coulomb avec le courant. CoulombsAh v1.1+
         //    intègre I*dt en interne (API: addMeasurement(current) — utilise
         //    micros() pour le dt). getLastInterval() est ensuite lu par
         //    battery.update(). Utilisez addMeasurementWithInterval(I, dt_s)

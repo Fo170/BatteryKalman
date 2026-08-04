@@ -31,7 +31,7 @@ void loop() {
         float current = readINA226();  // Votre lecture INA226
         float temp = 25.0;
 
-        // 1) Alimenter le compteur coulomb (CoulombAh v1.0.0 : addMeasurement()
+        // 1) Alimenter le compteur coulomb (CoulombsAh v1.1+ : addMeasurement()
         //    intègre I*dt via micros(); getLastInterval() lu par battery.update()).
         coulomb.addMeasurement(current);
 

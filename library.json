@@ -20,6 +20,7 @@
     {
       "name": "Fo170",
       "url": "https://github.com/Fo170",
+      "email": "olivier.fournet@free.fr",
       "maintainer": true
     }
   ],
@@ -34,5 +35,9 @@
     "raspberrypi",
     "atmelavr"
   ],
-  "headers": "BatteryKalman.h"
+  "headers": "BatteryKalman.h",
+  "dependencies": {
+    "Fo170/BatteryModels": ">=1.4.0",
+    "Fo170/CoulombsAh": ">=1.0.0"
+  }
 }

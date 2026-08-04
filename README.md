@@ -60,7 +60,7 @@ BatteryKalman **REQUIRE** une classe implémentant l'interface `BatteryModel`.
 lib_deps = 
     Fo170/BatteryModels >= 1.4    # ← Implémentation BatteryModel (recommandée)
     Fo170/BatteryKalman >= 1.6.0    # Extended Kalman Filter
-    Fo170/CoulombAh >= 1.0            # Compteur coulombs (Coulomb.h)
+    Fo170/CoulombsAh >= 1.1            # Compteur coulombs (Coulomb.h)
 ```
 
 ### Installation (Arduino IDE)
@@ -92,13 +92,19 @@ Après installation, votre sketch doit compiler:
 ```cpp
 #include <BatteryModels.h>  // Interface BatteryModel (recommandé)
 #include <BatteryKalman.h>  // Extended Kalman Filter
-#include <Coulomb.h>        // Si utilisé
+#include <Coulomb.h>        // Compteur coulombs (obligatoire, depuis Fo170/CoulombsAh)
 
 // Crée votre modèle batterie
 BatteryModel model(TECH_LIFEPO4, 4, 100.0f);
 
-// Filtre Kalman
+// Données à persister
+SoCData socData;
 KalmanState2D kalmanState;
+
+// Compteur coulombs (CoulombsAh v1.1+)
+Coulomb coulomb;
+
+// Filtre Kalman (API v1.6.0 : SoCData + KalmanState2D + BatteryModel + Coulomb)
 BatteryKalman battery(&socData, &kalmanState, &model, &coulomb);
 ```
 
@@ -125,6 +131,7 @@ BatteryKalman battery(&socData, &kalmanState, &model, &coulomb);
 ### Persistance
 - **État Kalman persistable** : SoCData + KalmanState2D
 - **Support multi-backend** : EEPROM, LittleFS, Preferences, SD card, etc.
+- La librairie **ne persiste pas elle-même** : `saveState()`/`loadState()` sont des stubs à implémenter côté utilisateur. Recommandé : la librairie [**Fo170/Persistance**](https://github.com/Fo170/Persistance) (EEPROM/FRAM/LittleFS), avec des registres par backend. Les exemples `Exemples/` illustrent le branchement.
 
 ## 📊 Phases d'apprentissage
 
