@@ -18,13 +18,13 @@
   },
   "authors": [
     {
-      "name": "Fo170",
+      "name": "Olivier FOURNET",
       "url": "https://github.com/Fo170",
       "email": "olivier.fournet@free.fr",
       "maintainer": true
     }
   ],
-  "license": "GPL-3.0",
+  "license": "GPL-3.0-only",
   "frameworks": "arduino",
   "platforms": [
     "espressif8266",

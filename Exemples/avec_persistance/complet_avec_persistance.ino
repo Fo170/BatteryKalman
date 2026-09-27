@@ -103,7 +103,7 @@ void loadBatteryState() {
     // KalmanState2D (défauts = valeurs internes v1.5.3, indépendants des
     // macros sentinelles v1.6.0 qui valent NAN par défaut)
     kalmanState.C_hat = doc["C_hat"] | 0.0f;
-    kalmanState.dC_dCycle = doc["dC_dCycle"] | -0.0005f;  // Défaut si ancien format
+    kalmanState.dC_dCycle = doc["dC_dCycle"] | 0.0005f;  // Défaut si ancien format
     kalmanState.P[0][0] = doc["P_CC"] | KALMAN_DEFAULT_TUNING.p_init_C;
     kalmanState.P[0][1] = doc["P_Caging"] | 0.0f;
     kalmanState.P[1][0] = kalmanState.P[0][1];

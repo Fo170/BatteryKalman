@@ -41,6 +41,19 @@
  * - Aucun breaking change : sans setter ni BatteryModels v1.4+, le
  *   comportement est identique à v1.5.3.
  *
+ * P1 — MODE PSEUDO-REPOS (opt-in) : pour les installations sans repos long
+ * (décharge permanente la nuit, charge PV le jour), exploite les courts instants
+ * à courant ~nul comme ancre OCV basse. C = Ah_déchargés / (100 − SoC_repos)/100,
+ * combinée à l'ancre haute FLOAT (=100 %) et au comptage Ah. Activer via
+ * enablePseudoRest() (désactivé par défaut : comportement v1.6.0 inchangé).
+ *
+ * P2 — RÉGRESSION ACCUMULÉE (observateur passif) : accumule les couples
+ * (dSoC, dAh) de chaque segment valide et ajuste une droite par l'origine
+ * (dAh = C·dSoC/100), pondérée par dSoC² (les décharges profondes recalent).
+ * API : getRegressionCapacity(), getRegressionPoints(), getRegressionDispersion(),
+ * getRegressionMaxDoD(), resetRegression().
+ * 100 % passif (ne requiert aucun contrôle de la charge/décharge).
+ *
  * Licence: GNU General Public License v3
  * Version: 1.6.0
  * Date: Août 2026
@@ -160,8 +173,63 @@
 #ifndef REST_LONG_STABLE_MAX_SAMPLES
 #define REST_LONG_STABLE_MAX_SAMPLES 32     // taille max de l'anneau (sécurité mémoire, compile-time)
 #endif
+// K10 (documentation): la taille de l'anneau REST est pilotée EXCLUSIVEMENT par
+// cette macro compile-time. Le champ homonyme `KalmanTuning::rest_long_stable_max_samples`
+// (exposé par BatteryModels) n'est PAS consommé ici : le définir via setRestLong()/tuning
+// n'a aucun effet. Pour changer la taille, définir REST_LONG_STABLE_MAX_SAMPLES avant #include.
 #ifndef REST_LONG_SYNC_MS
 #define REST_LONG_SYNC_MS       1800000UL   // délai entre 2 synchros REST_LONG (hors tuning)
+#endif
+#ifndef REST_ALIGN_SYNC_MS
+#define REST_ALIGN_SYNC_MS      300000UL    // délai d'alignement SoC au repos (hors tuning) — sert aussi de porte au cutoff basse tension (K9)
+#endif
+#ifndef REST_LONG_NOISE_K
+#define REST_LONG_NOISE_K       5.0f        // R6: facteur d'adaptation du seuil de planéité au bruit de mesure
+#endif
+
+// ============================================================
+// MODE PSEUDO-REPOS (P1) — ancre OCV courte, opt-in
+// ============================================================
+// Pour les installations SANS repos long (décharge permanente la nuit, charge
+// PV le jour) : on exploite les courts instants à courant ~nul comme ancre OCV
+// basse. Combinée à l'ancre haute FLOAT (=100 %) et au comptage Ah, elle permet
+// d'estimer la capacité : C = Ah_decharges / (100 - SoC_repos)/100.
+// Opt-in : désactivé par défaut (activer via enablePseudoRest()).
+#ifndef PSEUDO_REST_CURRENT_MAX
+#define PSEUDO_REST_CURRENT_MAX 0.05f       // |I| < seuil (A) = courant "nul"
+#endif
+#ifndef PSEUDO_REST_MIN_SAMPLES
+#define PSEUDO_REST_MIN_SAMPLES 2           // nb min d'échantillons consécutifs (ex. 2 x 5 min = 10 min)
+#endif
+#ifndef PSEUDO_REST_R_FACTOR
+#define PSEUDO_REST_R_FACTOR    4.0f        // P1: R plancher multiplié (borne basse)
+#endif
+#ifndef PSEUDO_REST_SOC_SIGMA
+#define PSEUDO_REST_SOC_SIGMA   2.0f        // P1: incertitude de SoC de l'ancre OCV (%, absolu)
+#endif
+#ifndef PSEUDO_REST_TAU_MIN
+#define PSEUDO_REST_TAU_MIN     0.0f        // P1: constante de temps de relaxation (min) pour extrapoler l'OCV (0 = pas d'extrapolation, conservateur)
+#endif
+#ifndef PSEUDO_REST_MAX_CORR
+#define PSEUDO_REST_MAX_CORR    0.150f      // P1: correction de relaxation max (V), garde-fou
+#endif
+#ifndef PSEUDO_REST_MIN_AH
+#define PSEUDO_REST_MIN_AH      2.0f        // P1: Ah de décharge minimum pour valider une ancre pseudo-repos (~1/3 de la décharge nocturne)
+#endif
+
+// ============================================================
+// P2 — RÉGRESSION ACCUMULÉE (observateur passif)
+// ============================================================
+// Pour un IoT passif (ne contrôle ni charge ni décharge) : au lieu d'estimer la
+// capacité segment par segment (très bruité), on accumule les couples
+// (dSoC, dAh) de chaque segment valide et on ajuste une droite par l'origine :
+//     dAh = C * dSoC/100   ->   pente = capacité
+// Le bruit s'annule sur N points (sigma / sqrt(N)). 100% passif.
+#ifndef REG_MAX_POINTS
+#define REG_MAX_POINTS          32          // taille de l'anneau de points (compile-time)
+#endif
+#ifndef REG_MIN_DSOC
+#define REG_MIN_DSOC            3.0f        // dSoC minimal (%) pour accepter un point
 #endif
 
 // ============================================================
@@ -187,7 +255,7 @@ static const KalmanTuning KALMAN_DEFAULT_TUNING = {
     3,          // battery_change_count
     15.0f,      // rest_long_min_min (min)
     0.020f,     // rest_long_stable_mv (V)
-    30.0f,      // rest_long_stable_min (min)
+    30.0f,      // rest_long_stable_min (min) — fenêtre recommandée plomb ; 15 min pour Li/NiMH
     6,          // rest_long_stable_min_samples
     32,         // rest_long_stable_max_samples
     0.95f,      // conf_float
@@ -242,7 +310,7 @@ struct SoCData {
 struct KalmanState2D {
     // État: [C_hat, dC_dCycle]
     float    C_hat = 0.0f;              // Capacité estimée (Ah)
-    float    dC_dCycle = -0.0005f;      // Taux vieillissement (Ah/cycle)
+    float    dC_dCycle = 0.0005f;      // Taux vieillissement (Ah/cycle, >0 = perte)
 
     // Covariance P[2x2] = [[P_CC, P_Caging], [P_agingC, P_aging]]
     // (valeurs v1.5.3 — remplacées à begin()/resetLearning() par le tuning)
@@ -278,15 +346,39 @@ private:
 
     ChargeState mppt_state = State_UNKNOWN;
     ChargeState mppt_state_prev = State_UNKNOWN;
+    ChargeState mppt_raw_prev = State_UNKNOWN;
     uint32_t  state_entry_ms = 0;
     // F8: suivi de stabilité de tension pour la détection REST_LONG
     float     rest_v_ring[REST_LONG_STABLE_MAX_SAMPLES] = {0.0f};
     uint32_t  rest_v_ring_ms[REST_LONG_STABLE_MAX_SAMPLES] = {0};
     uint8_t   rest_v_count = 0;
+    uint32_t  rest_v_last_push_ms = 0;
+    bool      rest_v_has_push = false;
+    float     rest_v_noise = 0.0f;      // R6: estimation du bruit de tension (EMA de |ΔV|) au repos
     bool      rest_stable = false;
     float     dVdt = 0.0f;
     float     V_prev = 0.0f;
     float     I_prev = 0.0f;
+    float     V_prev_sample = 0.0f;     // R6: V de l'échantillon précédent (bruit de mesure)
+
+    // P1: mode pseudo-repos (ancre OCV courte, opt-in)
+    bool      pseudo_rest_enabled = false;
+    float     pseudo_rest_i_max = PSEUDO_REST_CURRENT_MAX;
+    uint8_t   pseudo_rest_min_samples = PSEUDO_REST_MIN_SAMPLES;
+    float     pseudo_rest_min_ah = PSEUDO_REST_MIN_AH;
+    float     pseudo_rest_tau_min = PSEUDO_REST_TAU_MIN;
+    uint8_t   pseudo_rest_count = 0;    // échantillons consécutifs à |I| < seuil
+    float     pseudo_rest_v = 0.0f;     // tension extrapolée (OCV estimé)
+    float     pseudo_rest_v_start = 0.0f;
+    uint32_t  pseudo_rest_t0_ms = 0;
+    bool      pseudo_rest_ended = false;// le pseudo-repos vient de se terminer (1 tour)
+    uint16_t  pseudo_rest_events = 0;   // compteur (observabilité)
+
+    // P2: régression accumulée (observateur passif)
+    float     reg_dsoc[REG_MAX_POINTS] = {0.0f};
+    float     reg_dah[REG_MAX_POINTS] = {0.0f};
+    uint8_t   reg_count = 0;
+    uint8_t   reg_head = 0;
 
     LearningPhase phase = PHASE_BOOTSTRAP;
 
@@ -294,19 +386,12 @@ private:
         bool     active = false;
         float    Ah_start = 0.0f;
         float    SoC_start = 0.0f;
-        float    conf_start = 0.0f;
-        uint32_t start_ms = 0;
-        float    I_sq_sum = 0.0f;
-        float    I_sum = 0.0f;
         uint32_t n = 0;
-        float    I_min = 999.0f;
-        float    I_max = 0.0f;
-        bool     had_discharge = false;
-        bool     had_charge = false;
     } seg;
 
     float R_int_eff = 0.0f;
     bool  state_dirty = false;
+    bool  cycle_initialized = false;
     float last_Ah = 0.0f;
 
     char  phase_info[80] = "Bootstrap";
@@ -323,19 +408,19 @@ private:
     } cycle;
 
     float last_cycles = 0.0f;           // Pour calcul delta_cycles
+    float cycles_since_update = 0.0f;   // K7: cycles accumulés depuis la dernière mesure Kalman
 
     // ============================================================
     // TUNING PAR TECHNOLOGIE (v1.6.0)
     // ============================================================
     // Hiérarchie de résolution (du plus fort au plus faible) :
     //   1. override runtime (setters)          -> _tuningOverride
-    //   2. model->getKalmanTuning()            -> _tuningFromModel
+    //   2. model->getKalmanTuning()            -> valeur locale de résolution
     //   3. macros compile-time (optionnelles)  -> KALMAN_*_MACRO
     //   4. défaut interne                      -> KALMAN_DEFAULT_TUNING
     // _tuningResolved est re-résolu à chaque getTuning() (léger) : les
     // changements de technologie du modèle sont donc pris en compte.
     KalmanTuning _tuningOverride;
-    KalmanTuning _tuningFromModel;
     KalmanTuning _tuningResolved;
     bool _tuningOverrideSet = false;
 
@@ -345,9 +430,8 @@ private:
             // setter runtime (niveau 1) : remplace tout, y compris les macros
             t = _tuningOverride;
         } else if (model) {
-            const KalmanTuning& mt = model->getKalmanTuning();
-            t = mt;
-            _tuningFromModel = mt;
+            // niveau 2 : réglages du modèle
+            t = model->getKalmanTuning();
             // macros compile-time (niveau 3) > modèle (niveau 2)
             _applyMacroOverrides(t);
         } else {
@@ -389,10 +473,6 @@ private:
     uint32_t _restLongStableMs() {
         const KalmanTuning& t = getTuning();
         return (uint32_t)(t.rest_long_stable_min * 60000.0f);
-    }
-    uint8_t _restLongMinSamples() {
-        const KalmanTuning& t = getTuning();
-        return t.rest_long_stable_min_samples;
     }
 
     // ============================================================
@@ -441,7 +521,7 @@ private:
     void applyKalmanUpdate2D(float C_measured, float R, float delta_cycles) {
         if (!kalman->initialized) {
             kalman->C_hat = C_measured;
-            kalman->dC_dCycle = -0.0005f;  // Valeur par défaut
+            kalman->dC_dCycle = 0.0005f;  // Valeur par défaut
             kalman->P[0][0] = R;
             kalman->P[1][1] = getTuning().q_aging_uncertainty;
             kalman->initialized = true;
@@ -473,7 +553,7 @@ private:
             if (kalman->outlier_streak >= t.battery_change_count &&
                 fabsf(innovation) > t.battery_change_thr * kalman->C_hat) {
                 kalman->C_hat = C_measured;
-                kalman->dC_dCycle = -0.0005f;
+                kalman->dC_dCycle = 0.0005f;
                 kalman->P[0][0] = R * 2.0f;
                 kalman->P[1][1] = t.q_aging_uncertainty * 5.0f;
                 kalman->n_updates = 3;
@@ -573,6 +653,7 @@ private:
         } else {
             phase = PHASE_TRACK;
         }
+        snprintf(phase_info, sizeof(phase_info), "%s", PHASE_NAMES[phase]);
     }
 
     void updateDerivatives(float V, float I, float dt_s) {
@@ -585,6 +666,40 @@ private:
         I_prev = I;
     }
 
+    // P1: détection des courts instants à courant ~nul (pseudo-repos).
+    // Sur une installation sans repos long (décharge de nuit, charge PV de jour),
+    // ces instants fournissent une ancre OCV basse approximative. On retient la
+    // DERNIÈRE tension du repos (la plus relaxée) et on signale sa fin.
+    void updatePseudoRest(float V, float I) {
+        pseudo_rest_ended = false;
+        if (!pseudo_rest_enabled) return;
+
+        if (fabsf(I) < pseudo_rest_i_max) {
+            if (pseudo_rest_count == 0) {
+                pseudo_rest_v_start = V;
+                pseudo_rest_t0_ms = millis();
+            }
+            pseudo_rest_count++;
+            pseudo_rest_v = V;
+        } else {
+            if (pseudo_rest_count >= pseudo_rest_min_samples) {
+                // Extrapolation de relaxation : la tension remonte vers l'OCV
+                // (V_inf = V + pente x tau). Corrige le biais "repos court".
+                uint32_t elapsed = millis() - pseudo_rest_t0_ms;
+                if (pseudo_rest_count >= 2 && elapsed > 0) {
+                    float slope = (pseudo_rest_v - pseudo_rest_v_start) / (elapsed / 60000.0f);
+                    float corr = slope * pseudo_rest_tau_min;
+                    if (corr >  PSEUDO_REST_MAX_CORR) corr =  PSEUDO_REST_MAX_CORR;
+                    if (corr < -PSEUDO_REST_MAX_CORR) corr = -PSEUDO_REST_MAX_CORR;
+                    pseudo_rest_v += corr;
+                }
+                pseudo_rest_ended = true;
+                pseudo_rest_events++;
+            }
+            pseudo_rest_count = 0;
+        }
+    }
+
     void updateMpptState(float V, float I) {
         float C_ref = getEffectiveCapacity();
         mppt_state = model->detectChargeState(V, I, C_ref);
@@ -594,9 +709,10 @@ private:
         // de transition (FLOAT/REST_LONG) dans handleSyncEvents,
         // updateSegmentAndKalman et updateCycleDetection devient possible.
         // mppt_state_prev sera mis à jour en FIN de update().
-        if (mppt_state != mppt_state_prev) {
+        if (mppt_state != mppt_raw_prev) {
             state_entry_ms = millis();
         }
+        mppt_raw_prev = mppt_state;
 
         // --- F8: porte de stabilité pour REST -> REST_LONG ---
         // On alimente un anneau (temps, tension); REST_LONG n'est atteint
@@ -604,15 +720,41 @@ private:
         // stable sur la fenêtre rest_long_stable_min (écart crête <
         // rest_long_stable_mv). Durées config par technologie (v1.6.0).
         if (mppt_state == State_REST) {
-            rest_v_ring[rest_v_count % REST_LONG_STABLE_MAX_SAMPLES] = V;
-            rest_v_ring_ms[rest_v_count % REST_LONG_STABLE_MAX_SAMPLES] = millis();
-            if (rest_v_count < 255) rest_v_count++;
-            if (rest_v_count > REST_LONG_STABLE_MAX_SAMPLES) rest_v_count = REST_LONG_STABLE_MAX_SAMPLES;
+            uint32_t stable_ms = _restLongStableMs();
+            uint32_t now_ms = millis();
+
+            // K11 CORRECTION: tolérance au wrap de millis() (~49,7 j). Si l'horloge
+            // a rebouclé depuis la dernière écriture, l'anneau contient des
+            // horodatages du cycle précédent (ms ≈ 4,29e9) qui ne seraient plus
+            // purgés par le cutoff → écart crête gonflé → REST_LONG différé. On
+            // vide alors l'anneau pour repartir d'une fenêtre propre.
+            if (rest_v_has_push && now_ms < rest_v_last_push_ms) {
+                rest_v_count = 0;
+                rest_v_last_push_ms = 0;
+                rest_v_has_push = false;
+                for (uint8_t i = 0; i < REST_LONG_STABLE_MAX_SAMPLES; i++) rest_v_ring_ms[i] = 0;
+            }
+
+            // K1 + R1: anneau réellement temporel. On n'écrit qu'au plus un
+            // échantillon par stable_ms/MAX afin que l'anneau (taille fixe)
+            // couvre toute la fenêtre stable_ms quel que soit le rythme
+            // d'échantillonnage (sinon, à 1-10 Hz, il ne couvrait que ~3 s).
+            // R3: la cadence doit rester <= stable_ms/(min_samples-1) pour que
+            // l'anneau contienne assez d'échantillons (sinon REST_LONG jamais atteint).
+            uint32_t push_ms = stable_ms / REST_LONG_STABLE_MAX_SAMPLES;
+            if (push_ms == 0) push_ms = 1;
+            if (!rest_v_has_push || (now_ms - rest_v_last_push_ms) >= push_ms) {
+                uint8_t widx = rest_v_count % REST_LONG_STABLE_MAX_SAMPLES;
+                rest_v_ring[widx] = V;
+                rest_v_ring_ms[widx] = now_ms;
+                rest_v_count = (uint8_t)((rest_v_count + 1) % REST_LONG_STABLE_MAX_SAMPLES);
+                rest_v_last_push_ms = now_ms;
+                rest_v_has_push = true;
+            }
 
             // Conserver uniquement les échantillons dans la fenêtre temporelle
             // et calculer l'écart crête (ptp) sur ceux-ci.
-            uint32_t stable_ms = _restLongStableMs();
-            uint32_t cutoff = millis() - stable_ms;
+            uint32_t cutoff = (now_ms > stable_ms) ? (now_ms - stable_ms) : 0UL;
             float v_min = 9999.0f, v_max = -9999.0f;
             uint8_t kept = 0;
             for (uint8_t i = 0; i < REST_LONG_STABLE_MAX_SAMPLES; i++) {
@@ -623,9 +765,23 @@ private:
                 kept++;
             }
             const KalmanTuning& t = getTuning();
+
+            // R6 (auto-adaptatif): seuil de planéité relatif au bruit de mesure.
+            // Si le bruit (ADC/capteur) gonfle l'écart crête, on relâche le seuil
+            // (borné à 3x le seuil de base) au lieu de bloquer REST_LONG.
+            if (V_prev_sample > 0.0f) {
+                float dV = fabsf(V - V_prev_sample);
+                rest_v_noise = (rest_v_noise <= 0.0f) ? dV : (0.95f * rest_v_noise + 0.05f * dV);
+            }
+            float stable_mv_eff = t.rest_long_stable_mv;
+            float noise_floor = REST_LONG_NOISE_K * rest_v_noise;
+            if (noise_floor > stable_mv_eff) {
+                stable_mv_eff = min(noise_floor, 3.0f * t.rest_long_stable_mv);
+            }
+
             bool time_ok = (millis() - state_entry_ms >= _restLongMinMs());
             bool stable_ok = (kept >= t.rest_long_stable_min_samples)
-                          && (v_max - v_min <= t.rest_long_stable_mv);
+                          && (v_max - v_min <= stable_mv_eff);
             rest_stable = stable_ok;
 
             if (time_ok && stable_ok) {
@@ -633,6 +789,8 @@ private:
             }
         } else {
             rest_v_count = 0;
+            rest_v_last_push_ms = 0;
+            rest_v_has_push = false;
             for (uint8_t i = 0; i < REST_LONG_STABLE_MAX_SAMPLES; i++) rest_v_ring_ms[i] = 0;
             rest_stable = false;
         }
@@ -650,19 +808,26 @@ private:
 
         if (mppt_state == State_REST_LONG && millis() - data->last_sync_time > REST_LONG_SYNC_MS) {
             uint32_t rest_min_ms = _restLongMinMs();
-            uint32_t extra = millis() - state_entry_ms - rest_min_ms;
+            uint32_t elapsed = millis() - state_entry_ms;
+            uint32_t extra = (elapsed > rest_min_ms) ? (elapsed - rest_min_ms) : 0UL;
             float conf = t.conf_rest_base + t.conf_rest_span * min(1.0f, extra / (float)rest_min_ms);
             doSync(data->SoC_voltage, conf, "Long rest OCV");
             return;
         }
 
         float min_voltage = model->getMinVoltage();
-        if ((mppt_state == State_REST || mppt_state == State_REST_LONG) && total_ocv < min_voltage) {
+        // K9 CORRECTION: porte temporelle sur le cutoff basse tension. Sans elle,
+        // doSync() était appelé à CHAQUE échantillon tant que la batterie restait
+        // au repos sous V_min → state_dirty permanent (écriture persistance en
+        // continu) et reset coulomb répété. On limite à une synchro par 5 min
+        // (last_sync_time est mis à jour par doSync()).
+        if ((mppt_state == State_REST || mppt_state == State_REST_LONG) && total_ocv < min_voltage
+            && millis() - data->last_sync_time > REST_ALIGN_SYNC_MS) {
             doSync(3.0f, 0.75f, "Low voltage cutoff");
             return;
         }
 
-        if (mppt_state == State_REST && millis() - data->last_sync_time > 300000UL) {
+        if (mppt_state == State_REST && millis() - data->last_sync_time > REST_ALIGN_SYNC_MS) {
             data->SoC_coulomb = 0.90f * data->SoC_coulomb + 0.10f * data->SoC_voltage;
             data->last_sync_time = millis();
         }
@@ -677,7 +842,7 @@ private:
 
         snprintf(last_sync_info, sizeof(last_sync_info),
                  "%s conf=%.0f%%", reason, confidence * 100.0f);
-        startNewSegment(new_SoC, confidence);
+        startNewSegment(new_SoC);
         state_dirty = true;
     }
 
@@ -728,55 +893,40 @@ private:
         return base;
     }
 
-    void startNewSegment(float SoC_start, float conf) {
+    void startNewSegment(float SoC_start) {
         seg.active = true;
         seg.Ah_start = coulombMeter->getAmpereHours();
         seg.SoC_start = SoC_start;
-        seg.conf_start = conf;
-        seg.start_ms = millis();
-        seg.I_sq_sum = 0.0f;
-        seg.I_sum = 0.0f;
         seg.n = 0;
-        seg.I_min = 999.0f;
-        seg.I_max = 0.0f;
-        seg.had_discharge = false;
-        seg.had_charge = false;
     }
 
-    void updateSegmentAndKalman(float I, float delta_cycles) {
+    void updateSegmentAndKalman(float delta_cycles) {
         if (!seg.active) {
             if (mppt_state == State_FLOAT || mppt_state == State_REST_LONG) {
-                const KalmanTuning& t = getTuning();
-                float conf = (mppt_state == State_FLOAT) ? t.conf_float : (t.conf_rest_base + t.conf_rest_span);
-                startNewSegment(data->SoC_fused, conf);
+                startNewSegment(data->SoC_fused);
             }
             return;
         }
 
-        float I_abs = fabsf(I);
-        seg.I_sum += I_abs;
-        seg.I_sq_sum += I_abs * I_abs;
         seg.n++;
-        seg.I_min = min(seg.I_min, I_abs);
-        seg.I_max = max(seg.I_max, I_abs);
-        if (I < -0.05f) seg.had_discharge = true;
-        if (I > 0.05f) seg.had_charge = true;
 
         float SoC_end = 0.0f;
-        float conf_end = 0.0f;
         bool close = false;
+        bool pseudo_close = false;   // P1: fermeture sur fin de pseudo-repos
 
         // F1: transitions détectées (plus de code mort)
         if (mppt_state == State_FLOAT && mppt_state_prev != State_FLOAT) {
-            SoC_end = 100.0f; conf_end = getTuning().conf_float; close = true;
+            SoC_end = 100.0f; close = true;
         } else if (mppt_state == State_REST_LONG && mppt_state_prev != State_REST_LONG) {
             // F5 + F8: fermeture par transition REST_LONG (porte de stabilité)
-            const KalmanTuning& t = getTuning();
-            uint32_t rest_min_ms = _restLongMinMs();
-            uint32_t extra = millis() - state_entry_ms - rest_min_ms;
             SoC_end = data->SoC_voltage;
-            conf_end = t.conf_rest_base + t.conf_rest_span * min(1.0f, extra / (float)rest_min_ms);
             close = true;
+        } else if (pseudo_rest_ended) {
+            // P1: fin d'un pseudo-repos -> ancre OCV basse (repos court).
+            // SoC estimé depuis la tension relaxée (dernier échantillon du repos).
+            SoC_end = model->ocvToSoc(pseudo_rest_v, 25.0f);
+            close = true;
+            pseudo_close = true;
         }
 
         if (!close) return;
@@ -787,6 +937,15 @@ private:
 
         float dAh = fabsf(coulombMeter->getAmpereHours() - seg.Ah_start);
         float dSoC = fabsf(SoC_end - seg.SoC_start);
+        float signed_ah = coulombMeter->getAmpereHours() - seg.Ah_start;
+
+        // P1: un pseudo-repos n'est une ancre BASSE valable qu'en DÉCHARGE NETTE
+        // (creux après la nuit). Un pseudo-repos pendant la CHARGE (tension haute,
+        // net positif) doit être IGNORÉ sans casser le segment en cours.
+        if (pseudo_close) {
+            if (signed_ah >= 0.0f) return;                 // net charge : ignorer, segment conservé
+            if (dAh < pseudo_rest_min_ah) { startNewSegment(SoC_end); return; }
+        }
 
         const KalmanTuning& t2 = getTuning();
         float min_dSoC = t2.seg_min_dsoc[1];
@@ -801,23 +960,39 @@ private:
         }
 
         if (dAh < dAh_threshold || dSoC < min_dSoC || seg.n == 0) {
-            startNewSegment(SoC_end, conf_end);
+            startNewSegment(SoC_end);
             return;
         }
 
         float C_measured = dAh / (dSoC / 100.0f);
 
         if (C_measured < 1.0f || C_measured > 2000.0f) {
-            startNewSegment(SoC_end, conf_end);
+            startNewSegment(SoC_end);
             return;
         }
 
+        // P2: accumuler le point (dSoC, dAh) pour la régression robuste (passif).
+        // UNIQUEMENT les segments de DÉCHARGE NETTE : les segments de charge sont
+        // biaisés par le rendement (Ah charge > Ah stockés) et par le maintien
+        // FLOAT (Ah accumulés sans variation de SoC).
+        if (signed_ah < 0.0f) addRegressionPoint(dSoC, dAh);
+
         // F3: R adaptatif réellement utilisé
         float R = kalman->R_measured;
+        // P1: un pseudo-repos (court, relaxation inachevée) est moins fiable
+        // qu'un REST_LONG. L'incertitude dominante est celle du SoC de l'ancre
+        // OCV : sigma_C = C * sigma_SoC / dSoC  ->  R = sigma_C^2 (majorant).
+        if (pseudo_close) {
+            // R dérivé de la mesure elle-même (C_measured) : robuste même au 1er point.
+            float sig_c = C_measured * (PSEUDO_REST_SOC_SIGMA / dSoC);
+            float R_pseudo = sig_c * sig_c;
+            R = max(R * PSEUDO_REST_R_FACTOR, R_pseudo);
+        }
 
         // EKF 2D update
         applyKalmanUpdate2D(C_measured, R, delta_cycles);
-        startNewSegment(SoC_end, conf_end);
+        cycles_since_update = 0.0f;   // K7: cycles consommés par la mesure
+        startNewSegment(SoC_end);
     }
 
 public:
@@ -839,14 +1014,21 @@ public:
             data->coulomb_initialized = true;
             data->last_sync_time = millis();
             coulombMeter->begin(0, false);
-            last_Ah = coulombMeter->getAmpereHours();
         }
+
+        // K8 CORRECTION: synchroniser TOUJOURS last_Ah sur le compteur courant,
+        // y compris en restauration (coulomb_initialized == true). Sinon, si le
+        // compteur coulomb est restauré à une valeur non nulle (persistance),
+        // last_Ah reste à son défaut (0) et le 1er update() injecte tout le
+        // compteur comme incrément (dAh = getAmpereHours() - 0) → saut de SoC.
+        last_Ah = coulombMeter->getAmpereHours();
 
         updatePhaseFromConfidence();
         state_entry_ms = millis();
         last_cycles = data->cycles_partial;
         // F1: garantir un état "précédent" cohérent au démarrage
         mppt_state_prev = mppt_state;
+        mppt_raw_prev = mppt_state;
     }
 
     // ============================================================
@@ -867,6 +1049,7 @@ public:
         data->SoC_voltage = model->ocvToSoc(V_cell_ocv * model->getCellCount(), T);
 
         updateMpptState(V, I);
+        updatePseudoRest(V, I);   // P1: ancre OCV basse (repos court), opt-in
 
         float current_Ah = coulombMeter->getAmpereHours();
         float dAh = current_Ah - last_Ah;
@@ -885,9 +1068,13 @@ public:
 
         // F6: apprentissage Kalman TOUJOURS actif (indépendant de isAutoDetect)
         {
+            // K7: accumuler les cycles écoulés depuis la dernière mesure Kalman.
+            // Sans accumulation, le modèle de processus vieillissement est
+            // appliqué avec Δcycles≈0 à la mesure et dC_dCycle n'est jamais appris.
             float delta_cycles = data->cycles_partial - last_cycles;
-            updateSegmentAndKalman(I, delta_cycles);
             last_cycles = data->cycles_partial;
+            cycles_since_update += delta_cycles;
+            updateSegmentAndKalman(cycles_since_update);
         }
 
         handleSyncEvents(V_cell_ocv);
@@ -900,16 +1087,16 @@ public:
 
         // F1: mppt_state_prev mis à jour en fin de cycle pour la prochaine itération
         mppt_state_prev = mppt_state;
+        V_prev_sample = V;   // R6: mémorise V pour l'estimation du bruit de mesure
     }
 
     // ============================================================
     // DÉTECTION DE CYCLES
     // ============================================================
     void updateCycleDetection(float I) {
-        static bool initialized = false;
-        if (!initialized) {
+        if (!cycle_initialized) {
             cycle.cycle_start_time = millis();
-            initialized = true;
+            cycle_initialized = true;
         }
 
         cycle.SoC_max = max(cycle.SoC_max, data->SoC_fused);
@@ -961,7 +1148,7 @@ public:
     void resetLearning() {
         const KalmanTuning& t = getTuning();
         kalman->C_hat = 0.0f;
-        kalman->dC_dCycle = -0.0005f;
+        kalman->dC_dCycle = 0.0005f;
         kalman->P[0][0] = t.p_init_C;
         kalman->P[0][1] = 0.0f;
         kalman->P[1][0] = 0.0f;
@@ -1106,6 +1293,117 @@ public:
         _tuningOverride.rest_long_stable_mv = stable_mv;
         _tuningOverride.rest_long_stable_min = stable_min;
         _tuningOverride.rest_long_stable_min_samples = min_samples;
+    }
+
+    // ============================================================
+    // R7: PROFIL REST_LONG PAR TECHNOLOGIE (opt-in, auto-adaptatif)
+    // ============================================================
+    // Applique des paramètres REST_LONG adaptés à la chimie, déduits du nom
+    // renvoyé par model->getTechnologyName() (interface BatteryModel). Utilise
+    // le setter runtime (niveau 1 : prime sur le modèle). À appeler après begin().
+    // Le seuil crête reste en outre auto-adaptatif au bruit de mesure (R6).
+    void applyRecommendedRestLong() {
+        const char* n = model ? model->getTechnologyName() : nullptr;
+        float   min_min = 15.0f, stable_min = 30.0f, stable_mv = 0.020f;
+        uint8_t min_samples = 6;
+        if (n) {
+            if (strstr(n, "Plomb") || strstr(n, "AGM") || strstr(n, "Gel")) {
+                // Plomb (inondé/AGM/GEL/PbC) : relaxation lente -> repos long
+                min_min = 30.0f; stable_min = 60.0f; stable_mv = 0.030f;
+            } else if (strstr(n, "LiFePO4") || strstr(n, "LFP")) {
+                // Plateau OCV plat : repos long, seuil serré
+                min_min = 30.0f; stable_min = 60.0f; stable_mv = 0.010f;
+            } else if (strstr(n, "Nickel") || strstr(n, "NiCd")) {
+                // NiMH/NiCd/NiZn/NiFe : relaxation rapide
+                min_min = 15.0f; stable_min = 30.0f; stable_mv = 0.020f;
+            } else if (strstr(n, "Sodium")) {
+                // Na-ion : OCV peu fiable (segments OCV désactivés côté tuning)
+                min_min = 15.0f; stable_min = 30.0f; stable_mv = 0.020f;
+            } else if (strstr(n, "Supercondensateur") || strstr(n, "EDLC")) {
+                // Supercondensateur : tension linéaire, relaxation quasi nulle
+                min_min = 5.0f;  stable_min = 15.0f; stable_mv = 0.050f;
+            } else {
+                // Li-ion (Li-Ion/NMC/NCA/LCO/LiPo/LMNO/LTO) et défaut
+                min_min = 15.0f; stable_min = 30.0f; stable_mv = 0.020f;
+            }
+        }
+        setRestLong(min_min, stable_mv, stable_min, min_samples);
+    }
+
+    // ============================================================
+    // P1: MODE PSEUDO-REPOS (opt-in) — ancre OCV basse sur repos court
+    // ============================================================
+    // Pour les installations SANS repos long (décharge permanente la nuit,
+    // charge PV le jour, avec de brefs instants à courant ~nul). Active une
+    // ancre basse sur ces instants : C = Ah_decharges / (100 - SoC_repos)/100,
+    // combinée à l'ancre haute FLOAT (=100 %) et au comptage Ah.
+    // Rétro-compatible : désactivé par défaut.
+    void enablePseudoRest(float current_max_a = PSEUDO_REST_CURRENT_MAX,
+                          uint8_t min_samples = PSEUDO_REST_MIN_SAMPLES,
+                          float min_discharge_ah = PSEUDO_REST_MIN_AH,
+                          float relax_tau_min = PSEUDO_REST_TAU_MIN) {
+        pseudo_rest_enabled = true;
+        pseudo_rest_i_max = current_max_a;
+        pseudo_rest_min_samples = (min_samples == 0) ? 1 : min_samples;
+        pseudo_rest_min_ah = min_discharge_ah;
+        pseudo_rest_tau_min = relax_tau_min;
+        pseudo_rest_count = 0;
+    }
+    void disablePseudoRest() {
+        pseudo_rest_enabled = false;
+        pseudo_rest_count = 0;
+        pseudo_rest_ended = false;
+    }
+    bool     isPseudoRestEnabled() { return pseudo_rest_enabled; }
+    uint16_t getPseudoRestEvents() { return pseudo_rest_events; }
+
+    // ============================================================
+    // P2: RÉGRESSION ACCUMULÉE (observateur passif)
+    // ============================================================
+    // Ajoute un point (dSoC%, dAh) à l'anneau. Un point n'est retenu que si
+    // dSoC >= REG_MIN_DSOC (sinon l'erreur relative explose).
+    void addRegressionPoint(float dSoC, float dAh) {
+        if (dSoC < REG_MIN_DSOC || dAh <= 0.0f) return;
+        reg_dsoc[reg_head] = dSoC;
+        reg_dah[reg_head] = dAh;
+        reg_head = (uint8_t)((reg_head + 1) % REG_MAX_POINTS);
+        if (reg_count < REG_MAX_POINTS) reg_count++;
+    }
+    // Capacité par régression linéaire pondérée passant par l'origine.
+    // Poids = dSoC² : la variance de C_i = dAh/(dSoC/100) est ∝ 1/dSoC², donc les
+    // cycles PROFONDS (grand dSoC) dominent naturellement -> les décharges fortes
+    // ponctuelles "recalent" l'estimation sans écraser l'historique.
+    float getRegressionCapacity() {
+        if (reg_count < 2) return 0.0f;
+        float sxy = 0.0f, sxx = 0.0f;
+        for (uint8_t i = 0; i < reg_count; i++) {
+            float w = reg_dsoc[i] * reg_dsoc[i];
+            sxy += w * reg_dsoc[i] * reg_dah[i];
+            sxx += w * reg_dsoc[i] * reg_dsoc[i];
+        }
+        return (sxx > 0.0f) ? (sxy / sxx * 100.0f) : 0.0f;
+    }
+    uint8_t getRegressionPoints() { return reg_count; }
+    void    resetRegression() { reg_count = 0; reg_head = 0; }
+    // dSoC maximal observé (profondeur du cycle le plus profond accumulé)
+    float getRegressionMaxDoD() {
+        float m = 0.0f;
+        for (uint8_t i = 0; i < reg_count; i++) if (reg_dsoc[i] > m) m = reg_dsoc[i];
+        return m;
+    }
+    // Dispersion : coefficient de variation (%) des capacités implicites C_i = dAh/(dSoC/100)
+    float getRegressionDispersion() {
+        if (reg_count < 3) return -1.0f;
+        float sum = 0.0f;
+        for (uint8_t i = 0; i < reg_count; i++) sum += reg_dah[i] / (reg_dsoc[i] / 100.0f);
+        float mean = sum / reg_count;
+        if (mean <= 0.0f) return -1.0f;
+        float s2 = 0.0f;
+        for (uint8_t i = 0; i < reg_count; i++) {
+            float ci = reg_dah[i] / (reg_dsoc[i] / 100.0f);
+            s2 += (ci - mean) * (ci - mean);
+        }
+        return sqrtf(s2 / reg_count) / mean * 100.0f;
     }
 
     void setConfidence(float conf_float, float conf_rest_base, float conf_rest_span,

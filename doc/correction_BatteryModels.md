@@ -23,9 +23,9 @@ Si `State_FLOAT` n'est **jamais** détecté, le filtre Kalman ne reçoit
 pratiquement aucun point de référence fiable et reste bloqué en phase
 **Bootstrap** (capacité inconnue) pendant des mois.
 
-C'est exactement ce qui a été observé sur les données réelles
-(`evo_bat.csv`) : le filtre est resté 5 mois en Bootstrap, incapable de
-fermer un seul segment de charge, faute de détection FLOAT.
+C'est exactement ce qui a été observé sur les données réelles (jeu de
+données depuis retiré du dépôt) : le filtre est resté 5 mois en Bootstrap,
+incapable de fermer un seul segment de charge, faute de détection FLOAT.
 
 ---
 
@@ -124,17 +124,16 @@ float = 14,22 V) :
 | 12,50 V | 0,00 A | `State_REST` | `State_REST` |
 | 12,20 V | −2,0 A | `State_DISCHARGE` | `State_DISCHARGE` |
 
-### 5.2 Impact sur l'analyse réelle (port Python, données `evo_bat.csv`)
+### 5.2 Impact sur l'analyse réelle
 
 La correction fait partie de l'ensemble F1–F8. À elle seule elle restaure
 la **détection FLOAT** ; combinée aux correctifs de `BatteryKalman.h`
 (transition FLOAT, fermeture de segment, EKF 2D...), la capacité estimée
-passe de **108,2 Ah (buggé)** à **43,5 Ah (corrigé)** sur un groupement
-de batteries plomb usagées annoncé < 50 Ah — estimation désormais
-physiquement cohérente.
+passait de **108,2 Ah (buggé)** à **43,5 Ah (corrigé)** sur un groupement
+de batteries plomb usagées annoncé < 50 Ah — estimation physiquement cohérente.
+(Le jeu de données réel et le port Python de validation ont été retirés du dépôt.)
 
-Voir le rapport complet : `doc/analyse_kalman.md`, notamment la **section 8**
-(catalogue des 7 bugs + porte de stabilité).
+Voir le catalogue complet des corrections : [`../CHANGELOG.md`](../CHANGELOG.md) (Annexe K/R).
 
 ---
 
