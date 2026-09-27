@@ -15,7 +15,7 @@ estimates:
 - **State of Charge (SoC)** — fusion of coulomb-counting and voltage/OCV
 
 - **Language:** C++ (Arduino framework, C++11+), single header.
-- **Current version:** `1.6.0` (see `library.json`). Older docs still say `1.5.3` — the
+- **Current version:** `1.7.0` (see `library.json`). Older docs still say `1.5.3` — the
   changelog is authoritative.
 - **License:** GPL-3.0-only.
 - **Repo:** https://github.com/Fo170/BatteryKalman
@@ -235,7 +235,7 @@ State_REST_LONG`. Renamed from `MpptState`/`MPPT_*` in BatteryModels v1.2 (see `
 
 8. **`saveState()` is also a stub.** It only clears `state_dirty`.
 
-9. **Version strings disagree across docs.** `library.json` and code say `1.6.0`; several docs
+9. **Version strings disagree across docs.** `library.json` and code say `1.7.0`; several docs
    say `1.5.3`. Trust `CHANGELOG.md` + `library.json`.
 
 10. **Units.** `update()` takes **pack** voltage; OCV is derived per-cell internally. `getRintEff()`
@@ -304,7 +304,7 @@ State_REST_LONG`. Renamed from `MpptState`/`MPPT_*` in BatteryModels v1.2 (see `
 24. **Pseudo-rest mode is opt-in (P1).** `enablePseudoRest()` uses brief ~zero-current moments as
     a LOW OCV anchor for installations with no long rest. Only net-DISCHARGE pseudo-rests are
     accepted; pseudo-rests during charge are IGNORED without breaking the segment. Disabled by
-    default → v1.6.0 behavior unchanged.
+    default → 1.7.0 behavior unchanged unless explicitly enabled.
 
 25. **Regression uses net-discharge segments only (P2).** `addRegressionPoint()` is called only
     when `signed_ah < 0`. Charge segments are biased (coulomb efficiency + FLOAT hold where Ah

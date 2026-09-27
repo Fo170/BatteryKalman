@@ -3,7 +3,7 @@
 [![Arduino](https://img.shields.io/badge/Arduino-Compatible-blue)](https://www.arduino.cc/)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-Compatible-orange)](https://platformio.org/)
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.en.html)
-[![Version](https://img.shields.io/badge/Version-1.6.0-brightgreen.svg)](https://github.com/Fo170/BatteryKalman/releases)
+[![Version](https://img.shields.io/badge/Version-1.7.0-brightgreen.svg)](https://github.com/Fo170/BatteryKalman/releases)
 [![GitHub Repository](https://img.shields.io/badge/GitHub-Fo170/BatteryKalman-blue)](https://github.com/Fo170/BatteryKalman)
 [![Compatible: BatteryModels](https://img.shields.io/badge/Compatible-BatteryModels%20v1.4%2B-success)](https://github.com/Fo170/BatteryModels)
 
@@ -12,17 +12,19 @@
 - **Taux de vieillissement (dC/dcycle)** - appris automatiquement
 - **État de charge (SoC)** - en fusion coulomb-counting + tension
 
+> **v1.7.0** — Chasse aux bugs (K1–K12, R1–R7) + observateur passif (P1/P2) :
+> 12 correctifs d'algorithme/état, **seuil de planéité REST_LONG auto-adaptatif au bruit
+> de mesure** (R6), **profil REST_LONG par technologie** via `applyRecommendedRestLong()`
+> (R7), **mode pseudo-repos** `enablePseudoRest()` (P1) et **régression de capacité
+> pondérée** (P2). L'algorithme EKF a été **vérifié mathématiquement sur 4 sources**
+> (§ *Principe de fonctionnement*). Aucun breaking change. Détails :
+> [`CHANGELOG.md`](CHANGELOG.md) (Annexe K/R) et [`doc/rest_long_tuning.md`](doc/rest_long_tuning.md).
+
 > **v1.6.0** — Configuration par technologie : le filtre consomme
 > `model->getKalmanTuning()` (P/Q/R, seuils de segment, REST_LONG, confiance)
 > avec une hiérarchie **setter runtime > modèle > macros compile-time > défaut**.
 > Rétro-compatible : sans setter ni BatteryModels v1.4+, comportement v1.5.3.
 > Voir [`CHANGELOG.md`](CHANGELOG.md) et la comparaison détaillée dans [`doc/comparaison_kalman.md`](doc/comparaison_kalman.md).
-
-> **Corrections & nouveautés (post-v1.6.0)** — 12 correctifs d'algorithme/état (**K1–K12**) et deux
-> ajouts : **seuil de planéité REST_LONG auto-adaptatif au bruit de mesure** (R6) et **profil
-> REST_LONG par technologie** via `applyRecommendedRestLong()` (R7). L'algorithme EKF a été
-> **vérifié mathématiquement sur 4 sources** (§ *Principe de fonctionnement*). Détails :
-> [`CHANGELOG.md`](CHANGELOG.md) (Annexe K/R) et [`doc/rest_long_tuning.md`](doc/rest_long_tuning.md).
 
 Cette librairie est **technologie-agnostique** et utilise une **interface `BatteryModel` concrète** pour les paramètres spécifiques (OCV, résistances, courbes de charge, etc.).
 
@@ -40,7 +42,7 @@ Vous pouvez aussi utiliser:
 
 **Official Repository**: [**https://github.com/Fo170/BatteryKalman**](https://github.com/Fo170/BatteryKalman)
 
-- **Main Branch**: Latest stable release (v1.6.0)
+- **Main Branch**: Latest stable release (v1.7.0)
 - **License**: GNU General Public License v3
 - **Issue Tracker**: [GitHub Issues](https://github.com/Fo170/BatteryKalman/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/Fo170/BatteryKalman/discussions)
@@ -56,7 +58,7 @@ git checkout main
 
 - [Installation](#-installation)
 - [Dépendances & matériel](#-dépendances--matériel)
-- [Caractéristiques](#-caractéristiques-v160)
+- [Caractéristiques](#-caractéristiques-v170)
 - [Phases d'apprentissage](#-phases-dapprentissage)
 - [Principe de fonctionnement (EKF 2D)](#-principe-de-fonctionnement--algorithme-ekf-2d)
 - [Tuning recommandé](#-tuning-recommandé)
@@ -80,7 +82,7 @@ BatteryKalman **REQUIRE** une classe implémentant l'interface `BatteryModel`.
 [env:your_board]
 lib_deps =
     Fo170/BatteryModels >= 1.4      # ← Implémentation BatteryModel (recommandée)
-    Fo170/BatteryKalman >= 1.6.0    # Extended Kalman Filter
+    Fo170/BatteryKalman >= 1.7.0    # Extended Kalman Filter
     Fo170/CoulombsAh >= 1.1         # Compteur coulombs (Coulomb.h)
 ```
 
@@ -94,7 +96,7 @@ lib_deps =
 2. **Installer BatteryKalman**:
    - Sketch → Include Library → Manage Libraries
    - Chercher "BatteryKalman"
-   - Installer v1.6.0 ou plus récent
+   - Installer v1.7.0 ou plus récent
 
 3. **Installer CoulombsAh** (obligatoire, `Coulomb.h`):
    - Chercher "CoulombsAh" → Installer v1.1+
@@ -131,7 +133,7 @@ KalmanState2D kalmanState;
 // Compteur coulombs (CoulombsAh v1.1+)
 Coulomb coulomb;
 
-// Filtre Kalman (API v1.6.0 : SoCData + KalmanState2D + BatteryModel + Coulomb)
+// Filtre Kalman (API v1.7.0 : SoCData + KalmanState2D + BatteryModel + Coulomb)
 BatteryKalman battery(&socData, &kalmanState, &model, &coulomb);
 
 // Profil REST_LONG adapté à la technologie (plomb 30 min, Li-ion 15 min, ...)
@@ -198,7 +200,7 @@ Nécessaire uniquement pour la persistance JSON de l'exemple `Exemples/avec_pers
 |-----------|-----|------------|-----------|
 | Arduino IDE | 1.8.13 | 2.0+ | 2.3 |
 | BatteryModels | **1.4** | 1.4+ | 1.6 |
-| BatteryKalman | **1.6.0** | 1.6.0 | 1.6.0 |
+| BatteryKalman | **1.7.0** | 1.7.0 | 1.7.0 |
 | CoulombsAh (`Coulomb.h`) | 1.1 | 1.1+ | 1.1+ |
 | ArduinoJson | 6.18 | 6.20+ | 7.0 |
 
@@ -211,7 +213,7 @@ Nécessaire uniquement pour la persistance JSON de l'exemple `Exemples/avec_pers
 | `Coulomb not found` | CoulombsAh non installé | Installer [Fo170/CoulombsAh](https://github.com/Fo170/CoulombsAh) v1.1+ |
 | `out of memory` (Uno) | RAM insuffisante | Utiliser ESP32, ou réduire les buffers |
 
-## 📋 Caractéristiques (v1.6.0)
+## 📋 Caractéristiques (v1.7.0)
 
 ### Kalman Filter
 - **Extended Kalman Filter 2D** : Estime simultanément capacité + taux vieillissement
@@ -220,8 +222,9 @@ Nécessaire uniquement pour la persistance JSON de l'exemple `Exemples/avec_pers
 - **Continuous Confidence** : Métrique [0,1] au lieu de phases discrètes
 - **🐛 v1.5.3** : EKF 2D réellement complet (vieillissement appris), R adaptatif appliqué, transition FLOAT fonctionnelle, porte de stabilité REST (F8)
 - **✨ v1.6.0** : configuration P/Q/R + seuils + REST_LONG + confiance **par technologie** (`model->getKalmanTuning()`), setters runtime, seuil ΔAh relatif, gating OCV (NiFe/Sodium)
-- **✨ Auto-adaptatif (R6/R7)** : seuil de planéité REST_LONG adapté au **bruit de mesure** ; **profil REST_LONG par technologie** via `applyRecommendedRestLong()` (plomb 30 min / Li-ion 15 min / …)
-- **🐛 Corrections K1–K12** : anneau de stabilité REST rotatif, REST_LONG stable, signe du vieillissement, underflow `millis()`, **apprentissage du vieillissement réellement effectif** (accumulation des cycles), **resynchronisation `last_Ah` à la restauration** (K8), **porte temporelle du cutoff basse tension** (K9), **tolérance au wrap `millis()`** (K11) — voir [`CHANGELOG.md`](CHANGELOG.md) (Annexe K/R)
+- **✨ v1.7.0 (R6/R7)** : seuil de planéité REST_LONG adapté au **bruit de mesure** ; **profil REST_LONG par technologie** via `applyRecommendedRestLong()` (plomb 30 min / Li-ion 15 min / …)
+- **✨ v1.7.0 (P1/P2)** : **mode pseudo-repos** opt-in (`enablePseudoRest()`) et **régression de capacité pondérée** (`getRegressionCapacity()`, …)
+- **🐛 Corrections v1.7.0 (K1–K12)** : anneau de stabilité REST rotatif, REST_LONG stable, signe du vieillissement, underflow `millis()`, **apprentissage du vieillissement réellement effectif** (accumulation des cycles), **resynchronisation `last_Ah` à la restauration** (K8), **porte temporelle du cutoff basse tension** (K9), **tolérance au wrap `millis()`** (K11) — voir [`CHANGELOG.md`](CHANGELOG.md) (Annexe K/R)
 
 ### Batterie
 - **Technologie-agnostique** : fonctionne avec tout type batterie via `BatteryModel`
@@ -581,6 +584,11 @@ avancée). BatteryKalman a suivi :
 > La v1.6.0 est **additive** : aucune migration requise. Nouveau : `getTuning()`, setters runtime
 > (`setP/setQ/setR/setSegmentThresholds/setBatteryChange/setRestLong/setConfidence/resetTuning`)
 > et consommation de `model->getKalmanTuning()` (BatteryModels v1.4+).
+>
+> La v1.7.0 est également **additive** : aucune migration requise. Nouveau :
+> `applyRecommendedRestLong()` (R7), `enablePseudoRest()` (P1) et
+> `getRegressionCapacity()`/`resetRegression()` (P2). Les correctifs K1–K12 changent
+> l'état interne par défaut (`dC_dCycle = +0.0005`) — un état persisté reste lisible.
 
 ### v2.0.0 → v1.5 (`KalmanState` → `KalmanState2D`)
 

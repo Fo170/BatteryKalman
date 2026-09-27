@@ -17,6 +17,7 @@ void setup() {
     loadBatteryState();
 
     battery.begin();
+    battery.applyRecommendedRestLong();  // R7 : profil REST_LONG adapté à la technologie
 }
 
 void loop() {
@@ -35,7 +36,7 @@ void loop() {
         //    intègre I*dt via micros(); getLastInterval() lu par battery.update()).
         coulomb.addMeasurement(current);
 
-        // 2) Mise à jour Kalman — API v1.6.0: update(V, I, T)
+        // 2) Mise à jour Kalman — API v1.7.0: update(V, I, T)
         battery.update(voltage, current, temp);
     }
 
@@ -101,7 +102,7 @@ void loadBatteryState() {
     socData.DoD_accumulated = doc["DoD_acc"] | 0.0f;
 
     // KalmanState2D (défauts = valeurs internes v1.5.3, indépendants des
-    // macros sentinelles v1.6.0 qui valent NAN par défaut)
+    // macros sentinelles v1.7.0 qui valent NAN par défaut)
     kalmanState.C_hat = doc["C_hat"] | 0.0f;
     kalmanState.dC_dCycle = doc["dC_dCycle"] | 0.0005f;  // Défaut si ancien format
     kalmanState.P[0][0] = doc["P_CC"] | KALMAN_DEFAULT_TUNING.p_init_C;

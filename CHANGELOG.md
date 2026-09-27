@@ -1,6 +1,15 @@
 # Changelog - BatteryKalman
 
-## [Non publié] — Corrections de bugs (chasse aux bugs v1.6.0)
+## [1.7.0] - 2026-09-27
+
+### 🎯 Release — chasse aux bugs K1–K12/R1–R7 + observateur passif P1/P2
+
+Cette version publie le cycle complet de chasse aux bugs post-1.6.0 (12 correctifs
+d'algorithme/état, 7 réglages/robustesse) et deux ajouts majeurs : **seuil de
+planéité REST_LONG auto-adaptatif au bruit** (R6), **profil REST_LONG par
+technologie** (`applyRecommendedRestLong()`, R7), **mode pseudo-repos** (P1) et
+**régression de capacité pondérée** (P2). Aucun breaking change API/persistance :
+les nouveaux comportements sont opt-in.
 
 Corrections et ajouts dans `src/BatteryKalman.h` (ajout d'une méthode publique :
 `applyRecommendedRestLong()`) :

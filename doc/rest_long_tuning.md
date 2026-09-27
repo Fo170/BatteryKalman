@@ -1,6 +1,6 @@
 # Réglage REST_LONG par technologie + seuil auto-adaptatif
 
-> BatterieKalman v1.6.0 — compléments R6/R7. Voir `../CHANGELOG.md` (Annexe K/R).
+> BatterieKalman v1.7.0 — compléments R6/R7. Voir `../CHANGELOG.md` (Annexe K/R).
 
 La référence OCV « repos long » (état `State_REST_LONG`) sert de point d'ancrage fiable
 pour l'apprentissage de capacité. Sa qualité dépend de **trois** réglages :

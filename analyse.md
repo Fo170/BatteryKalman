@@ -1,6 +1,6 @@
 # analyse.md — BatteryKalman (bug-hunt)
 
-> Contexte produit pour la revue de code. Fichier cible : **`src/BatteryKalman.h`** (v1.6.0,
+> Contexte produit pour la revue de code. Fichier cible : **`src/BatteryKalman.h`** (v1.7.0,
 > header-only). Journal des findings : **`CHANGELOG.md`** (Annexe K/R).
 
 ## 0. Cadrage

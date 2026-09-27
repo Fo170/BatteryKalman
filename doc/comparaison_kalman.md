@@ -2,7 +2,7 @@
 
 > Document d'analyse. Compare l'algorithme de Kalman **en général**, ses **variantes
 > spécifiques aux batteries** (littérature), et le filtre réellement implémenté dans
-> **BatteryKalman v1.6.0**, dans le contexte de la chaîne
+> **BatteryKalman v1.7.0**, dans le contexte de la chaîne
 > `CoulombsAh` + `BatteryModels` + `BatteryKalman` + `BatteryLifePredictor`.
 > Toutes les affirmations comparatives sont sourcées en fin de document (§G).
 
@@ -248,7 +248,7 @@ mais **non pondéré par les incertitudes** (pas de gain de Kalman).
 - **Prédiction événementielle** : `predictKalman()` est déclenché **à la mesure** (fermeture de
   segment), pas à chaque pas de temps.
 
-### C.5 Pipeline complet (état actuel, v1.6.0)
+### C.5 Pipeline complet (état actuel, v1.7.0)
 
 **Ordre interne de `update(V, I, T)`** (V = tension pack) :
 
@@ -323,7 +323,7 @@ Détail et preuves : [`../CHANGELOG.md`](../CHANGELOG.md) (Annexe K/R).
 
 ## D. Tableau comparatif synthétique
 
-| Aspect | Canonique (EKF + ECM) | Batterie (DEKF / multi-échelle) | **BatteryKalman v1.6.0** |
+| Aspect | Canonique (EKF + ECM) | Batterie (DEKF / multi-échelle) | **BatteryKalman v1.7.0** |
 |---|---|---|---|
 | État du filtre | `[SoC, V1, V2]` | état **+** paramètres (2 filtres) | **`[C, dC/dcycle]`** |
 | Mesure | tension terminale | tension / capacité | **capacité dérivée de segments OCV** |
@@ -412,7 +412,7 @@ dégradation → EOL). La prédiction de durée de vie **n'est pas** dans Batter
 
 ### Filtres du projet
 
-- `src/BatteryKalman.h` (v1.6.0) — EKF 2D capacité + vieillissement ; `README.md` § *Principe de fonctionnement*.
+- `src/BatteryKalman.h` (v1.7.0) — EKF 2D capacité + vieillissement ; `README.md` § *Principe de fonctionnement*.
 - [Fo170/BatteryModels](https://github.com/Fo170/BatteryModels) — OCV/Thévenin/thermique, `detectChargeState`, `getKalmanTuning`.
 - [Fo170/CoulombsAh](https://github.com/Fo170/CoulombsAh) — compteur de charge (`Coulomb.h`).
 - [Fo170/BatteryLifePredictor](https://github.com/Fo170/BatteryLifePredictor) — EFC/Miner/Rainflow + **Kalman 1D** (RUL/EOL).

@@ -41,6 +41,17 @@
  * - Aucun breaking change : sans setter ni BatteryModels v1.4+, le
  *   comportement est identique à v1.5.3.
  *
+ * v1.7.0 — CHASSE AUX BUGS (K1–K12, R1–R7) + OBSERVATEUR PASSIF (P1/P2)
+ * - K1–K12/R1–R7 : anneau de stabilité REST rotatif et temporel, REST_LONG
+ *   stable (réarmement sur l'état brut, tolérance au wrap de millis()),
+ *   vieillissement réellement appris (accumulation des cycles), signe du
+ *   taux de vieillissement, synchro last_Ah à la restauration, porte
+ *   temporelle du cutoff basse tension, seuil de planéité REST auto-adaptatif
+ *   au bruit (R6) et profil REST_LONG par technologie (R7).
+ * - P1 : mode pseudo-repos (opt-in) pour installations sans repos long.
+ * - P2 : régression accumulée (observateur passif de capacité).
+ * - Voir doc/rest_long_tuning.md et CHANGELOG.md (Annexe K/R).
+ *
  * P1 — MODE PSEUDO-REPOS (opt-in) : pour les installations sans repos long
  * (décharge permanente la nuit, charge PV le jour), exploite les courts instants
  * à courant ~nul comme ancre OCV basse. C = Ah_déchargés / (100 − SoC_repos)/100,
@@ -55,8 +66,8 @@
  * 100 % passif (ne requiert aucun contrôle de la charge/décharge).
  *
  * Licence: GNU General Public License v3
- * Version: 1.6.0
- * Date: Août 2026
+ * Version: 1.7.0
+ * Date: Septembre 2026
  */
 
 #ifndef BATTERY_KALMAN_H
