@@ -73,6 +73,9 @@
 #ifndef BATTERY_KALMAN_H
 #define BATTERY_KALMAN_H
 
+// Version de la librairie (source UNIQUE — agrégée par src/liste_lib.h)
+#define __BATTERYKALMAN_H_VERSION__ "1.7.1"
+
 #include <Arduino.h>
 #include <math.h>
 #include "BatteryModels.h"
@@ -243,6 +246,11 @@
 #define REG_MIN_DSOC            3.0f        // dSoC minimal (%) pour accepter un point
 #endif
 
+// (02/10/2026) Le plancher KALMAN_COARSE_ALPHA_MIN a été retiré : la fusion
+// suit désormais « le coulomb est la référence » (alpha=1 en charge/décharge,
+// alpha faible au repos), donc conf=0 ne peut plus ramener la fusion sur la
+// tension seule. Cf. fuseSoC().
+
 // ============================================================
 // DÉFAUT INTERNE (niveau 4 de la hiérarchie) — valeurs v1.5.3
 // ============================================================
@@ -405,9 +413,9 @@ private:
     bool  cycle_initialized = false;
     float last_Ah = 0.0f;
 
-    char  phase_info[80] = "Bootstrap";
-    char  last_sync_info[64] = "aucune";
-    char  last_learn_info[80] = "aucun";
+    char  phase_info[24] = "Bootstrap";
+    char  last_sync_info[24] = "aucune";
+    char  last_learn_info[24] = "aucun";
     float alpha_fused = 0.5f;
 
     struct CycleHistory {
@@ -869,24 +877,21 @@ private:
 
         data->soc_is_raw = false;
 
-        float kalman_conf = kalman->confidence;
-
+        // ⚠️ PRINCIPE « LE COULOMB EST LA RÉFÉRENCE » (02/10/2026) :
+        // Le comptage coulomb est FACTUEL (mesuré), il ne doit jamais être
+        // remplacé par une estimation tension sous courant. La tension/OCV ne
+        // sert d'ancre qu'au REPOS (équilibre) et en FLOAT (100 %). En charge
+        // (BULK/ABSORPTION) et en décharge, alpha=1 → SoC_fused = SoC_coulomb.
+        // (Avant : alpha_base × conf en COARSE → conf=0 rendait la fusion =
+        //  tension pure, d'où saut de SoC. On ne pondère plus par la confiance.)
         float alpha_base;
         switch (mppt_state) {
-            case State_FLOAT:      alpha_base = 0.00f; break;
-            case State_REST_LONG:  alpha_base = 0.02f; break;
-            case State_REST:       alpha_base = 0.10f; break;
-            case State_ABSORPTION: alpha_base = 0.70f; break;
-            case State_BULK:       alpha_base = 0.95f; break;
-            case State_DISCHARGE:  alpha_base = 0.97f; break;
-            default:               alpha_base = 0.50f; break;
+            case State_FLOAT:      alpha_base = 0.00f; break;  // ancre 100 %
+            case State_REST_LONG:  alpha_base = 0.02f; break;  // OCV très fiable (repos)
+            case State_REST:       alpha_base = 0.10f; break;  // OCV fiable (repos)
+            default:               alpha_base = 1.00f; break;  // BULK/ABSORPTION/DISCHARGE → coulomb
         }
-
-        if (phase == PHASE_COARSE) {
-            alpha_fused = alpha_base * kalman_conf;
-        } else {
-            alpha_fused = alpha_base;
-        }
+        alpha_fused = alpha_base;
 
         return alpha_fused * data->SoC_coulomb + (1.0f - alpha_fused) * data->SoC_voltage;
     }
@@ -1053,7 +1058,10 @@ public:
         updateDerivatives(V, I, dt_s);
 
         float r_int_eff;
-        float V_cell_ocv = model->correctVoltageToOCV(V, I, T, dt_s, &r_int_eff, nullptr)
+        // Référence = SoC COULOMB (factuel) pour scaler R_soc/R_int — évite
+        // l'emballement de la correction OCV sous charge (cf. BatteryModels).
+        float V_cell_ocv = model->correctVoltageToOCV(V, I, T, dt_s, &r_int_eff, nullptr,
+                                                      data->SoC_coulomb)
                           / model->getCellCount();
         R_int_eff = r_int_eff;
 
@@ -1416,6 +1424,38 @@ public:
         }
         return sqrtf(s2 / reg_count) / mean * 100.0f;
     }
+
+    // ============================================================
+    // P2/P1: ÉTAT PERSISTABLE (ring de régression + compteur pseudo-repos)
+    // ============================================================
+    // La classe ne persiste pas elle-même (cf. saveState()/loadState()).
+    // Ces accesseurs permettent à l'utilisateur de sauver/restaurer le ring
+    // de régression P2 (observateur passif) et le compteur d'événements P1
+    // dans son propre stockage (FRAM/EEPROM/LittleFS). Buffers externes de
+    // taille >= REG_MAX_POINTS (cf. getRegressionMaxPoints()).
+    //
+    // getRegressionRing() copie les points valides et renvoie leur nombre.
+    // setRegressionRing() restaure count points (count <= REG_MAX_POINTS) ;
+    // la régression étant invariante par permutation des points, l'ordre
+    // chronologique n'est pas nécessaire.
+    uint8_t getRegressionRing(float* dSoC_out, float* dAh_out) {
+        for (uint8_t i = 0; i < reg_count; i++) {
+            dSoC_out[i] = reg_dsoc[i];
+            dAh_out[i]  = reg_dah[i];
+        }
+        return reg_count;
+    }
+    void setRegressionRing(const float* dSoC_in, const float* dAh_in, uint8_t count) {
+        if (count > REG_MAX_POINTS) count = REG_MAX_POINTS;
+        for (uint8_t i = 0; i < count; i++) {
+            reg_dsoc[i] = dSoC_in[i];
+            reg_dah[i]  = dAh_in[i];
+        }
+        reg_count = count;
+        reg_head  = (uint8_t)(count % REG_MAX_POINTS);
+    }
+    static uint8_t getRegressionMaxPoints() { return REG_MAX_POINTS; }
+    void setPseudoRestEvents(uint16_t n) { pseudo_rest_events = n; }
 
     void setConfidence(float conf_float, float conf_rest_base, float conf_rest_span,
                        float conf_phase_coarse, float conf_phase_refine) {

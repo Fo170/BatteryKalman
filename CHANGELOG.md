@@ -1,5 +1,24 @@
 # Changelog - BatteryKalman
 
+## [1.7.1] - 2026-10-17
+
+### ✨ Added — accesseurs de persistance de l'observateur passif (P1/P2)
+
+Ajouts **additifs** (aucun changement de comportement sans appel) permettant au
+firmware hôte de **persister** l'état de la régression de capacité (P2) et du
+compteur de pseudo-repos (P1) hors de la lib (ex. FRAM sur ESP8266).
+
+| API | Rôle |
+|---|---|
+| `getRegressionRing(buf_dSoC, buf_dAh)` | Exporte le ring de régression P2 (ΔSoC / ΔAh) |
+| `setRegressionRing(buf_dSoC, buf_dAh)` | Restaure le ring après un reboot |
+| `getRegressionMaxPoints()` | Taille du ring (bornée par `REG_MAX_POINTS`) |
+| `getPseudoRestEvents()` | Compteur d'événements P1 (pseudo-repos) |
+| `setPseudoRestEvents(n)` | Restaure le compteur P1 après un reboot |
+
+Sans ces accesseurs, la régression P2 repartait de zéro à chaque redémarrage
+(perte de plusieurs jours d'apprentissage de capacité).
+
 ## [1.7.0] - 2026-09-27
 
 ### 🎯 Release — chasse aux bugs K1–K12/R1–R7 + observateur passif P1/P2
