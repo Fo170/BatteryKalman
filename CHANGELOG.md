@@ -1,5 +1,18 @@
 # Changelog - BatteryKalman
 
+## [1.7.2] - 2026-10-17
+
+### ✨ Added — macro de version `__<LIB>_H_VERSION__`
+
+Chaque header déclare désormais sa version via une macro préprocesseur,
+source **unique** (un projet hôte peut l'agréger, ex. page `/version`).
+
+### 🏷️ Divers
+
+- Version `1.7.1` → `1.7.2` (`library.json` + `library.properties`)
+
+---
+
 ## [1.7.1] - 2026-10-17
 
 ### ✨ Added — accesseurs de persistance de l'observateur passif (P1/P2)

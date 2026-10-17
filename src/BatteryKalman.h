@@ -74,7 +74,7 @@
 #define BATTERY_KALMAN_H
 
 // Version de la librairie (source UNIQUE — agrégée par src/liste_lib.h)
-#define __BATTERYKALMAN_H_VERSION__ "1.7.1"
+#define __BATTERYKALMAN_H_VERSION__ "1.7.2"
 
 #include <Arduino.h>
 #include <math.h>
