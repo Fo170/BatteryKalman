@@ -1,5 +1,40 @@
 # Changelog - BatteryKalman
 
+## [1.7.4] - 2026-10-18
+
+### 🐛 Fixed — pseudo-repos validé après 0,2 s au lieu de plusieurs minutes (B3)
+
+`updatePseudoRest()` ne validait une ancre OCV que sur un **nombre d'échantillons**
+(`PSEUDO_REST_MIN_SAMPLES = 2`). La conception d'origine supposait des échantillons espacés
+de plusieurs minutes (cf. commentaire « 2 x 5 min = 10 min »), mais un firmware qui appelle
+`update()` à **10 Hz** validait l'ancre après **0,2 s** de repos.
+
+**Pourquoi c'est faux** : la relaxation de polarisation d'une batterie plomb a une constante
+de temps de plusieurs dizaines de secondes (τ_pol). À 0,2 s, la tension terminale est encore
+**loin** de l'OCV : l'ancre est surestimée en charge et sous-estimée en décharge → `C_hat`
+biaisé, et donc capacité effective et SoC faussés.
+
+**Correctif** : ajout d'un critère de **durée** en plus du comptage d'échantillons.
+
+```
+ancre valide  ⟺  (nb_échantillons ≥ pseudo_rest_min_samples)  ET  (durée ≥ pseudo_rest_min_ms)
+```
+
+| Élément | Valeur |
+|---|---|
+| `PSEUDO_REST_MIN_MS` (nouveau) | **30 000 ms** (30 s) — plancher conservateur |
+| `enablePseudoRest(...)` | nouveau paramètre `min_duration_ms` (défaut `PSEUDO_REST_MIN_MS`) |
+| `getPseudoRestMinMs()` (nouveau) | lecture de la durée courante |
+
+### ⚠️ Compatibilité
+
+API **additive** : le 5ᵉ paramètre de `enablePseudoRest()` a une valeur par défaut, les appels
+existants compilent et fonctionnent. **Le comportement change volontairement** : les ancres
+pseudo-repos deviennent plus rares (mais valides). Mettre `min_duration_ms = 0` restaure
+l'ancien comportement (critère par échantillons seul).
+
+---
+
 ## [1.7.3] - 2026-10-18
 
 ### 🐛 Fixed — les compteurs Ah publiés ne se réconciliaient plus avec le SoC (F8)

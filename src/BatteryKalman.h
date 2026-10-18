@@ -74,7 +74,7 @@
 #define BATTERY_KALMAN_H
 
 // Version de la librairie (source UNIQUE — agrégée par src/liste_lib.h)
-#define __BATTERYKALMAN_H_VERSION__ "1.7.3"
+#define __BATTERYKALMAN_H_VERSION__ "1.7.4"
 
 #include <Arduino.h>
 #include <math.h>
@@ -213,7 +213,17 @@
 #define PSEUDO_REST_CURRENT_MAX 0.05f       // |I| < seuil (A) = courant "nul"
 #endif
 #ifndef PSEUDO_REST_MIN_SAMPLES
-#define PSEUDO_REST_MIN_SAMPLES 2           // nb min d'échantillons consécutifs (ex. 2 x 5 min = 10 min)
+#define PSEUDO_REST_MIN_SAMPLES 2           // nb min d'échantillons consécutifs
+#endif
+#ifndef PSEUDO_REST_MIN_MS
+// ⚠️ v1.7.4 (B3) — DURÉE minimale de pseudo-repos, en plus du nombre d'échantillons.
+// L'ancienne conception supposait des échantillons espacés de plusieurs minutes
+// (cf. commentaire « 2 x 5 min = 10 min »), mais un firmware qui appelle update()
+// à 10 Hz validait une ancre OCV après **0,2 s** de repos — bien trop court pour
+// que la relaxation de polarisation soit terminée (τ_pol de plusieurs dizaines de
+// secondes sur le plomb) ⇒ OCV surestimée en charge, sous-estimée en décharge, et
+// C_hat biaisé. 30 s est un plancher conservateur.
+#define PSEUDO_REST_MIN_MS      30000UL
 #endif
 #ifndef PSEUDO_REST_R_FACTOR
 #define PSEUDO_REST_R_FACTOR    4.0f        // P1: R plancher multiplié (borne basse)
@@ -384,6 +394,7 @@ private:
     bool      pseudo_rest_enabled = false;
     float     pseudo_rest_i_max = PSEUDO_REST_CURRENT_MAX;
     uint8_t   pseudo_rest_min_samples = PSEUDO_REST_MIN_SAMPLES;
+    uint32_t  pseudo_rest_min_ms = PSEUDO_REST_MIN_MS;   // v1.7.4 (B3) : durée mini
     float     pseudo_rest_min_ah = PSEUDO_REST_MIN_AH;
     float     pseudo_rest_tau_min = PSEUDO_REST_TAU_MIN;
     uint8_t   pseudo_rest_count = 0;    // échantillons consécutifs à |I| < seuil
@@ -714,10 +725,15 @@ private:
             pseudo_rest_count++;
             pseudo_rest_v = V;
         } else {
-            if (pseudo_rest_count >= pseudo_rest_min_samples) {
+            // v1.7.4 (B3) : une ancre OCV n'est valide que si le repos a duré
+            // assez longtemps POUR QUE la relaxation soit terminée. Le seul
+            // comptage d'échantillons est insuffisant : à 10 Hz, 2 échantillons
+            // = 0,2 s, alors que τ_pol vaut des dizaines de secondes sur le plomb.
+            uint32_t elapsed = millis() - pseudo_rest_t0_ms;
+            bool long_enough = (elapsed >= pseudo_rest_min_ms);
+            if (pseudo_rest_count >= pseudo_rest_min_samples && long_enough) {
                 // Extrapolation de relaxation : la tension remonte vers l'OCV
                 // (V_inf = V + pente x tau). Corrige le biais "repos court".
-                uint32_t elapsed = millis() - pseudo_rest_t0_ms;
                 if (pseudo_rest_count >= 2 && elapsed > 0) {
                     float slope = (pseudo_rest_v - pseudo_rest_v_start) / (elapsed / 60000.0f);
                     float corr = slope * pseudo_rest_tau_min;
@@ -1386,14 +1402,18 @@ public:
     void enablePseudoRest(float current_max_a = PSEUDO_REST_CURRENT_MAX,
                           uint8_t min_samples = PSEUDO_REST_MIN_SAMPLES,
                           float min_discharge_ah = PSEUDO_REST_MIN_AH,
-                          float relax_tau_min = PSEUDO_REST_TAU_MIN) {
+                          float relax_tau_min = PSEUDO_REST_TAU_MIN,
+                          uint32_t min_duration_ms = PSEUDO_REST_MIN_MS) {
         pseudo_rest_enabled = true;
         pseudo_rest_i_max = current_max_a;
         pseudo_rest_min_samples = (min_samples == 0) ? 1 : min_samples;
         pseudo_rest_min_ah = min_discharge_ah;
         pseudo_rest_tau_min = relax_tau_min;
+        pseudo_rest_min_ms = min_duration_ms;   // v1.7.4 (B3) : durée mini
         pseudo_rest_count = 0;
     }
+    /** v1.7.4 : durée minimale de pseudo-repos (ms) — 0 = critère par échantillons seul. */
+    uint32_t getPseudoRestMinMs() { return pseudo_rest_min_ms; }
     void disablePseudoRest() {
         pseudo_rest_enabled = false;
         pseudo_rest_count = 0;

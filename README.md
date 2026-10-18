@@ -3,7 +3,7 @@
 [![Arduino](https://img.shields.io/badge/Arduino-Compatible-blue)](https://www.arduino.cc/)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-Compatible-orange)](https://platformio.org/)
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.en.html)
-[![Version](https://img.shields.io/badge/Version-1.7.3-brightgreen.svg)](https://github.com/Fo170/BatteryKalman/releases)
+[![Version](https://img.shields.io/badge/Version-1.7.4-brightgreen.svg)](https://github.com/Fo170/BatteryKalman/releases)
 [![GitHub Repository](https://img.shields.io/badge/GitHub-Fo170/BatteryKalman-blue)](https://github.com/Fo170/BatteryKalman)
 [![Compatible: BatteryModels](https://img.shields.io/badge/Compatible-BatteryModels%20v1.6.9%2B-success)](https://github.com/Fo170/BatteryModels)
 
@@ -65,7 +65,7 @@ Vous pouvez aussi utiliser:
 
 **Official Repository**: [**https://github.com/Fo170/BatteryKalman**](https://github.com/Fo170/BatteryKalman)
 
-- **Main Branch**: Latest stable release (v1.7.3)
+- **Main Branch**: Latest stable release (v1.7.4)
 - **License**: GNU General Public License v3
 - **Issue Tracker**: [GitHub Issues](https://github.com/Fo170/BatteryKalman/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/Fo170/BatteryKalman/discussions)
@@ -105,7 +105,7 @@ BatteryKalman **REQUIRE** une classe implémentant l'interface `BatteryModel`.
 [env:your_board]
 lib_deps =
     Fo170/BatteryModels >= 1.6.9    # ← Implémentation BatteryModel (recommandée, soc_ref requis)
-    Fo170/BatteryKalman >= 1.7.3    # Extended Kalman Filter
+    Fo170/BatteryKalman >= 1.7.4    # Extended Kalman Filter
     Fo170/CoulombsAh >= 1.1         # Compteur coulombs (Coulomb.h)
 ```
 
@@ -119,7 +119,7 @@ lib_deps =
 2. **Installer BatteryKalman**:
    - Sketch → Include Library → Manage Libraries
    - Chercher "BatteryKalman"
-   - Installer v1.7.3 ou plus récent
+   - Installer v1.7.4 ou plus récent
 
 3. **Installer CoulombsAh** (obligatoire, `Coulomb.h`):
    - Chercher "CoulombsAh" → Installer v1.1+
@@ -156,7 +156,7 @@ KalmanState2D kalmanState;
 // Compteur coulombs (CoulombsAh v1.1+)
 Coulomb coulomb;
 
-// Filtre Kalman (API v1.7.3 : SoCData + KalmanState2D + BatteryModel + Coulomb)
+// Filtre Kalman (API v1.7.4 : SoCData + KalmanState2D + BatteryModel + Coulomb)
 BatteryKalman battery(&socData, &kalmanState, &model, &coulomb);
 
 // Profil REST_LONG adapté à la technologie (plomb 30 min, Li-ion 15 min, ...)
@@ -223,7 +223,7 @@ Nécessaire uniquement pour la persistance JSON de l'exemple `Exemples/avec_pers
 |-----------|-----|------------|-----------|
 | Arduino IDE | 1.8.13 | 2.0+ | 2.3 |
 | BatteryModels | **1.6.9** | 1.6.9+ | 1.6.9 |
-| BatteryKalman | **1.7.3** | 1.7.3 | 1.7.3 |
+| BatteryKalman | **1.7.4** | 1.7.4 | 1.7.4 |
 | CoulombsAh (`Coulomb.h`) | 1.1 | 1.1+ | 1.1+ |
 | ArduinoJson | 6.18 | 6.20+ | 7.0 |
 
@@ -236,7 +236,7 @@ Nécessaire uniquement pour la persistance JSON de l'exemple `Exemples/avec_pers
 | `Coulomb not found` | CoulombsAh non installé | Installer [Fo170/CoulombsAh](https://github.com/Fo170/CoulombsAh) v1.1+ |
 | `out of memory` (Uno) | RAM insuffisante | Utiliser ESP32, ou réduire les buffers |
 
-## 📋 Caractéristiques (v1.7.3)
+## 📋 Caractéristiques (v1.7.4)
 
 ### Kalman Filter
 - **Extended Kalman Filter 2D** : Estime simultanément capacité + taux vieillissement
@@ -250,6 +250,7 @@ Nécessaire uniquement pour la persistance JSON de l'exemple `Exemples/avec_pers
 - **🐛 Corrections v1.7.0 (K1–K12)** : anneau de stabilité REST rotatif, REST_LONG stable, signe du vieillissement, underflow `millis()`, **apprentissage du vieillissement réellement effectif** (accumulation des cycles), **resynchronisation `last_Ah` à la restauration** (K8), **porte temporelle du cutoff basse tension** (K9), **tolérance au wrap `millis()`** (K11) — voir [`CHANGELOG.md`](CHANGELOG.md) (Annexe K/R)
 - **✨ v1.7.1** : état P1/P2 **persistable** (`getRegressionRing()` / `setRegressionRing()` / `getRegressionMaxPoints()` / `setPseudoRestEvents()`)
 - **🐛 v1.7.2** : fusion SoC **sans pondération par la confiance** (« le coulomb est la référence », `alpha = 1` en charge/décharge) et `soc_ref` transmis à `correctVoltageToOCV()` — plus de saut de SoC en phase Convergence, plus d'emballement `SoC_voltage = 100 %` sous charge
+- **🐛 v1.7.4** : **pseudo-repos validé sur une DURÉE** (30 s mini) et plus seulement sur 2 échantillons — à 10 Hz cela valait 0,2 s, très inférieur à τ_pol (relaxation non terminée → `C_hat` biaisé)
 - **🐛 v1.7.3** : **compteurs Ah réconciliés avec le SoC** — `Ah_total_charged`/`Ah_total_discharged` dérivent du `dAh` corrigé (rendement η) au lieu de `I` brut + `0,98` codé en dur (écart de 1,7-1,9× à 5 A) ; ajout de `getCoulombMeter()` pour exposer le η réellement appliqué
 
 ### Batterie
@@ -279,6 +280,26 @@ Nécessaire uniquement pour la persistance JSON de l'exemple `Exemples/avec_pers
 
 > Chaque entrée donne **ce qui était faux**, **pourquoi** et la **formule exacte** avant/après.
 > Sources en fin de document ([Références](#-références)).
+
+### v1.7.4 — 2026-10-18 · pseudo-repos : critère de durée (B3)
+
+**Ce qui était faux.** Une ancre OCV n'était validée que sur un **nombre d'échantillons**
+(`PSEUDO_REST_MIN_SAMPLES = 2`), en supposant des échantillons espacés de plusieurs minutes
+(commentaire d'origine : « 2 x 5 min = 10 min »). Un firmware appelant `update()` à **10 Hz**
+validait donc l'ancre après **0,2 s** de repos.
+
+**Pourquoi c'était faux.** La relaxation de polarisation du plomb a une constante de temps
+τ_pol de plusieurs dizaines de secondes. À 0,2 s la tension terminale est encore loin de l'OCV :
+l'ancre est surestimée en charge et sous-estimée en décharge → `C_hat` biaisé.
+
+**Ce qui a changé.**
+
+```
+ancre valide  ⟺  (nb_échantillons ≥ pseudo_rest_min_samples)  ET  (durée ≥ pseudo_rest_min_ms)
+```
+
+`PSEUDO_REST_MIN_MS` = **30 000 ms** (nouveau) · `enablePseudoRest(..., min_duration_ms)` ·
+`getPseudoRestMinMs()`. API additive ; `min_duration_ms = 0` restaure l'ancien comportement.
 
 ### v1.7.3 — 2026-10-18 · compteurs Ah réconciliés avec le SoC
 
@@ -866,7 +887,7 @@ Le header déclare sa version dans une **source unique**, agrégée par un proje
 (par ex. une page `/version` qui affiche les versions de toutes les libs Fo170) :
 
 ```cpp
-#define __BATTERYKALMAN_H_VERSION__ "1.7.3"
+#define __BATTERYKALMAN_H_VERSION__ "1.7.4"
 ```
 
 `library.json` doit rester aligné sur cette macro (elle fait foi).
@@ -919,6 +940,35 @@ La résistance et la polarisation sont retirées par `BatteryModel` (cf. README 
 Δcycles       = cycles_partiel(k) − cycles_partiel(k−1)
 cycles_cumul += Δcycles                        (sinon Δcycles ≈ 0 et dC/dcycle n'est jamais appris)
 ```
+
+### 5 bis. Pseudo-repos — ancre OCV courte (P1, durcie en v1.7.4)
+
+Détection d'un repos court, puis validation de l'ancre **uniquement si la durée est suffisante** :
+
+```
+repos court  :  |I| < pseudo_rest_i_max                     (défaut 0,05 A)
+début        :  premier échantillon consécutif sous le seuil (mémorise V_start et t0)
+fin          :  |I| ≥ pseudo_rest_i_max
+
+ancre VALIDE ⟺ (n_échantillons ≥ pseudo_rest_min_samples)  ET  (t_fin − t0 ≥ pseudo_rest_min_ms)
+
+correction de relaxation (si pseudo_rest_tau_min > 0) :
+  pente  = (V_fin − V_start) / (durée en minutes)
+  corr   = clamp(pente · pseudo_rest_tau_min , ±PSEUDO_REST_MAX_CORR)
+  V_ancre = V_fin + corr
+```
+
+| Paramètre | Défaut | Rôle |
+|---|---|---|
+| `pseudo_rest_i_max` | 0,05 A | Seuil de « courant nul » |
+| `pseudo_rest_min_samples` | 2 | Nb d'échantillons consécutifs |
+| **`pseudo_rest_min_ms`** | **30 000 ms** | **Durée minimale (v1.7.4)** — `0` = critère par échantillons seul |
+| `pseudo_rest_tau_min` | 0 (désactivé) | τ de relaxation pour extrapoler l'OCV |
+| `PSEUDO_REST_MAX_CORR` | 0,150 V | Garde-fou sur la correction |
+
+> ⚠️ **Pourquoi la durée est indispensable** : à 10 Hz, `min_samples = 2` ne représente que
+> **0,2 s**, alors que la relaxation de polarisation du plomb dure des dizaines de secondes.
+> Sans le critère de durée, l'ancre est prise sur une tension encore loin de l'OCV.
 
 ### 6. Confiance (phase)
 
