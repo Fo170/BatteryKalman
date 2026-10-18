@@ -15,8 +15,9 @@ estimates:
 - **State of Charge (SoC)** — fusion of coulomb-counting and voltage/OCV
 
 - **Language:** C++ (Arduino framework, C++11+), single header.
-- **Current version:** `1.7.0` (see `library.json`). Older docs still say `1.5.3` — the
-  changelog is authoritative.
+- **Current version:** `1.7.3`. **Single source of truth = `__BATTERYKALMAN_H_VERSION__`**
+  (defined at the top of `src/BatteryKalman.h`); `library.json` must be kept in sync with it.
+  Older docs still say `1.5.3` — the changelog is authoritative.
 - **License:** GPL-3.0-only.
 - **Repo:** https://github.com/Fo170/BatteryKalman
 
@@ -24,14 +25,14 @@ estimates:
 
 ```
 BatteryKalman (this lib, src/BatteryKalman.h)
-   ├── depends on BatteryModel  (abstract interface)   → provided by BatteryModels v1.4+
+   ├── depends on BatteryModel  (abstract interface)   → provided by BatteryModels v1.6.9+
    ├── depends on Coulomb       (Ah integration)        → provided by CoulombsAh v1.1+
    └── persists SoCData + KalmanState2D  (user-implemented, e.g. Fo170/Persistance)
 ```
 
 `BatteryKalman` is **technology-agnostic**. All chemistry-specific parameters (OCV tables,
 resistances, charge-state detection, per-technology Kalman tuning) come from a
-`BatteryModel*`. **BatteryModels v1.4+** is the recommended implementation (provides
+`BatteryModel*`. **BatteryModels v1.6.9+** is the recommended implementation (provides
 `getKalmanTuning()`), but any class implementing the interface works.
 
 The core algorithm is the EKF in `src/BatteryKalman.h`. Everything else is docs, examples,
@@ -52,11 +53,11 @@ and Python reference ports used for validation.
 │   ├── comparaison_kalman.md    # KF/EKF theory, battery variants (AEKF/DEKF/UKF), comparison with this filter
 │   ├── rest_long_tuning.md      # REST_LONG tuning per technology + adaptive flatness threshold (R6/R7)
 │   ├── correction_BatteryModels.md  # F7 fix for BatteryModels.detectChargeState()
-│   ├── _repro_*.cpp             # Standalone g++ reproductions (K1–K12, R1–R7, P1/P2 proofs)
+│   ├── _repro_*.cpp             # Standalone g++ reproductions (K1–K12, R1–R7, P1/P2, fusion SoC proofs)
 │   ├── _repro_mocks/            # Functional Arduino/BatteryModels/Coulomb mocks for the repros
 │   └── _syntax/                 # Stub headers for a dependency-free g++ -fsyntax-only check
 ├── README.md                    # User-facing: intro, install, deps, usage, EKF theory, tuning, compat, migration, v1.5 history
-├── CHANGELOG.md                 # AUTHORITATIVE version history + bug-hunt journal (F1–F8, K1–K12, R1–R7, P1/P2)
+├── CHANGELOG.md                 # AUTHORITATIVE version history + bug-hunt journal (F1–F8, K1–K12, R1–R7, P1/P2, 1.7.2 fusion, 1.7.3 Ah counters)
 ├── analyse.md                   # bug-hunt: analysis context (variables, API, invariants)
 ├── library.json                 # PlatformIO manifest (name, version, deps)
 └── LICENSE
@@ -107,9 +108,25 @@ g++ -O0 -o /tmp/r doc/_repro_noise.cpp && /tmp/r                # R6
 g++ -O0 -o /tmp/r doc/_repro_aging.cpp && /tmp/r                # K7
 g++ -std=c++11 -I doc/_repro_mocks -I src -o /tmp/r doc/_repro_restore.cpp && /tmp/r   # K8/K9
 g++ -O0 -o /tmp/r doc/_repro_wrap.cpp && /tmp/r                 # K11
+g++ -std=c++11 -I doc/_repro_mocks -I src -o /tmp/r doc/_repro_pseudo_rest.cpp && /tmp/r  # P1/P2
+g++ -std=c++11 -I doc/_repro_mocks -I src -o /tmp/r doc/_repro_fusion.cpp && /tmp/r       # fusion SoC (1.7.2)
+g++ -std=c++11 -I doc/_syntax -I src -o /tmp/r doc/_repro_restlong_profile.cpp && /tmp/r  # R7
+```
+
+The library also compiles against the **real** `BatteryModels`/`CoulombsAh` headers with the
+same shim (`doc/_syntax/Arduino.h` provides `min`/`max`/`constrain`/`millis`/`micros` and a
+variadic `Serial` stub):
+
+```bash
+g++ -std=c++11 -fsyntax-only -I ../BatteryModels/src -I ../CoulombsAh/src \
+    -I doc/_syntax -I src doc/_syntax/test_bk.cpp
 ```
 
 `doc/_syntax/` holds dependency-free stub headers; `doc/_repro_mocks/` holds functional
+mocks. **Both `BatteryModels.h` mocks must declare the 7-argument
+`correctVoltageToOCV(float V, float I, float T, float dt, float* r, float* v_pol,
+float soc_ref = NAN)`** — since 1.7.2 `update()` passes `soc_ref`, so a 6-argument mock
+breaks `test_bk.cpp`, `_repro_restore.cpp` and `_repro_pseudo_rest.cpp`.
 mocks (Arduino clock, Coulomb counter, BatteryModel) used by `_repro_restore.cpp`. Each
 reproduction prints an `AVANT`/`APRES` (before/after) verdict and is the ground truth for
 the corresponding fix (K/R ids). `doc/rest_long_tuning.md` documents the R6/R7 rationale.
@@ -182,7 +199,7 @@ thresholds, REST_LONG gate params, confidence params.
 exposed via `getTuning()` (re-resolved on every call):
 1. **Runtime setters** (`setTuning/setP/setQ/setR/setSegmentThresholds/setBatteryChange/setRestLong/setConfidence`)
    → stored in `_tuningOverride`.
-2. **`model->getKalmanTuning()`** (BatteryModels v1.4+).
+2. **`model->getKalmanTuning()`** (BatteryModels v1.6.9+).
 3. **Compile-time macros** (`KALMAN_P_INIT_C`, `R_INIT`, `SEG_MIN_DAH`, …) — optional.
 4. **`KALMAN_DEFAULT_TUNING`** (v1.5.3 values).
 
@@ -198,9 +215,11 @@ continuous `confidence` in `updatePhaseFromConfidence()`. Legacy/observability o
 State_REST_LONG`. Renamed from `MpptState`/`MPPT_*` in BatteryModels v1.2 (see `README.md` § Migration).
 
 ### External deps
-- **`BatteryModel`** (abstract, from BatteryModels): `detectChargeState`, `correctVoltageToOCV`,
-  `ocvToSoc`, `getCellCount`, `getNominalCapacity`, `getMinVoltage/MaxVoltage`,
-  `getTechnologyName`, `isAutoDetect`, `isOcvReliable`, and (v1.4+) `getKalmanTuning()`.
+- **`BatteryModel`** (abstract, from BatteryModels): `detectChargeState`,
+  `correctVoltageToOCV(V, I, T, dt, float* r_int, float* v_pol, float soc_ref)` (the 7th
+  argument requires **≥ 1.6.9**), `ocvToSoc`, `getCellCount`, `getNominalCapacity`,
+  `getMinVoltage/MaxVoltage`, `getTechnologyName`, `isAutoDetect`, `isOcvReliable`, and
+  `getKalmanTuning()`.
 - **`Coulomb`** (from CoulombsAh, header `Coulomb.h`): `addMeasurement(I)` integrates I·dt
   internally via `micros()`; `getAmpereHours()`, `getLastInterval()`, `reset(false)`, `begin()`.
 
@@ -235,8 +254,9 @@ State_REST_LONG`. Renamed from `MpptState`/`MPPT_*` in BatteryModels v1.2 (see `
 
 8. **`saveState()` is also a stub.** It only clears `state_dirty`.
 
-9. **Version strings disagree across docs.** `library.json` and code say `1.7.0`; several docs
-   say `1.5.3`. Trust `CHANGELOG.md` + `library.json`.
+9. **Version strings.** `__BATTERYKALMAN_H_VERSION__` in `src/BatteryKalman.h` is the
+   **single source of truth** (`1.7.2`); `library.json` must match it. Several older docs
+   still say `1.5.3` — trust `CHANGELOG.md` + the macro.
 
 10. **Units.** `update()` takes **pack** voltage; OCV is derived per-cell internally. `getRintEff()`
     returns **milliohms** (multiplied by 1000). Coulomb counter is fed externally.
@@ -251,6 +271,8 @@ State_REST_LONG`. Renamed from `MpptState`/`MPPT_*` in BatteryModels v1.2 (see `
     (buggy v1.5 / fixed v1.5.3) and the real dataset were removed in the doc cleanup. To change
     algorithm behavior, update the relevant `_repro_*.cpp` (K/R ids) so the before/after proof
     still holds, and keep `doc/comparaison_kalman.md` (theory + variants) in sync.
+    `doc/_repro_fusion.cpp` locks the SoC fusion table and the confidence-independence property
+    (rule 26): if you touch `fuseSoC()`, that repro must stay `PASS`.
 
 14. **The REST stability ring is time-decimated (K1/R1/R4).** Writes are gated by
     `rest_v_has_push` / `rest_v_last_push_ms` with `push_ms = stable_ms / REST_LONG_STABLE_MAX_SAMPLES`,
@@ -304,7 +326,7 @@ State_REST_LONG`. Renamed from `MpptState`/`MPPT_*` in BatteryModels v1.2 (see `
 24. **Pseudo-rest mode is opt-in (P1).** `enablePseudoRest()` uses brief ~zero-current moments as
     a LOW OCV anchor for installations with no long rest. Only net-DISCHARGE pseudo-rests are
     accepted; pseudo-rests during charge are IGNORED without breaking the segment. Disabled by
-    default → 1.7.0 behavior unchanged unless explicitly enabled.
+    default → P1/P2 are purely additive (K1–K12 apply regardless).
 
 25. **Regression uses net-discharge segments only (P2).** `addRegressionPoint()` is called only
     when `signed_ah < 0`. Charge segments are biased (coulomb efficiency + FLOAT hold where Ah
@@ -312,3 +334,33 @@ State_REST_LONG`. Renamed from `MpptState`/`MPPT_*` in BatteryModels v1.2 (see `
     weight `dSoC²` (statistically optimal: Var(C_i) ∝ 1/dSoC²) so DEEP discharges recalibrate
     the estimate. Needs ≥2 points. Observability limits (small DoD, few anchors, relaxation) and
     the deep-discharge recalibration strategy are documented in `README.md`.
+
+26. **"Le coulomb est la référence" (02/10/2026).** `fuseSoC()` does **NOT** weight by
+    `kalman->confidence` anymore. `alpha = 1.00` for BULK / ABSORPTION / DISCHARGE / UNKNOWN
+    (SoC_fused = SoC_coulomb, the measured truth); low alpha at rest where OCV is a valid
+    anchor (FLOAT 0.00, REST_LONG 0.02, REST 0.10). **Do NOT reintroduce
+    `alpha_base * confidence`**: in PHASE_COARSE (conf < 0.30) it collapsed alpha to ~0.19, so
+    the fusion fell back to ~81 % on voltage and the reported SoC jumped ~11 % when confidence
+    ramped up (e.g. 80 % coulomb / 95 % voltage: 92.15 % in COARSE → 80.75 % in TRACK).
+    `KALMAN_COARSE_ALPHA_MIN` was removed with this change. Rationale + per-state table:
+    `README.md` § *Principe de fonctionnement* and the consumer project's
+    `docs/batterie/modele_batterie.md` §5.3 ("le SoC_coulomb sert de référence").
+
+27. **`correctVoltageToOCV(..., soc_ref)` is mandatory (BatteryModels ≥ 1.6.7).** `update()`
+    passes `data->SoC_coulomb` as the 7th argument. Without it BatteryModels derives `soc_est`
+    from the **terminal** voltage; during charge that saturates `R_soc` at `R_soc_max` (18) →
+    inflated `I·R` correction → `SoC_voltage` runs away to 100 %. Keep the `library.json`
+    floor at `>= 1.6.7`: a silently patched "1.6.1" existed in a vendored copy, so older
+    published releases do **not** have the parameter. Note BatteryModels guards with
+    `soc_ref > 0.0f`, so at SoC = 0 the fallback path is used (masked by the `s_ref ≥ 0.05`
+    floor).
+
+28. **Diagnostic buffers are trimmed per project, not per library.** `phase_info`,
+    `last_sync_info`, `last_learn_info` are sized by `KALMAN_PHASE_INFO_LEN` (80),
+    `KALMAN_SYNC_INFO_LEN` (64) and `KALMAN_LEARN_INFO_LEN` (80) — `#ifndef`-overridable, like
+    `REG_MAX_POINTS` and `REST_LONG_STABLE_MAX_SAMPLES`. The Coulometre ESP8266 project sets
+    them to 24 via `-D` (heap OOM fix, 02/10/2026, see that project's `AGENTS.md` § *Optim RAM*)
+    because it does not use the getters. Do **not** lower the library defaults: at 24 chars
+    `getLastLearnInfo()` truncates (`"EKF: C=26.0Ah dC=0.000500 conf=45% P=1.23"` → 23 chars)
+    and `getLastSyncInfo()` loses its value (`"Low voltage cutoff conf=75%"`).
+

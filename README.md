@@ -3,32 +3,55 @@
 [![Arduino](https://img.shields.io/badge/Arduino-Compatible-blue)](https://www.arduino.cc/)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-Compatible-orange)](https://platformio.org/)
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.en.html)
-[![Version](https://img.shields.io/badge/Version-1.7.0-brightgreen.svg)](https://github.com/Fo170/BatteryKalman/releases)
+[![Version](https://img.shields.io/badge/Version-1.7.3-brightgreen.svg)](https://github.com/Fo170/BatteryKalman/releases)
 [![GitHub Repository](https://img.shields.io/badge/GitHub-Fo170/BatteryKalman-blue)](https://github.com/Fo170/BatteryKalman)
-[![Compatible: BatteryModels](https://img.shields.io/badge/Compatible-BatteryModels%20v1.4%2B-success)](https://github.com/Fo170/BatteryModels)
+[![Compatible: BatteryModels](https://img.shields.io/badge/Compatible-BatteryModels%20v1.6.9%2B-success)](https://github.com/Fo170/BatteryModels)
 
 **Extended Kalman Filter (EKF) 2D** pour l'estimation simultanée de:
 - **Capacité batterie (C)** - en Ampere-heures (Ah)
 - **Taux de vieillissement (dC/dcycle)** - appris automatiquement
 - **État de charge (SoC)** - en fusion coulomb-counting + tension
 
+> **v1.7.3** — **Compteurs Ah réconciliés avec le SoC.** `Ah_total_discharged` intégrait
+> `(−I)·dt_h` **brut** et `Ah_total_charged` un **0,98 codé en dur**, alors que `SoC_coulomb`
+> utilise le `dAh` **corrigé** (rendement η) du compteur `Coulomb` : à 5 A les deux divergeaient
+> de **1,7-1,9×**, et les compteurs exposés en UI (`ah_chg`/`ah_dis`) contredisaient le SoC et
+> l'autonomie. Les deux compteurs dérivent désormais de la **même source** (`dAh`).
+> Ajout de `getCoulombMeter()` pour que l'UI affiche le η **réellement appliqué** au lieu de
+> recalculer la loi depuis `BatteryModel` (qui diverge : η constant côté compteur vs η(I) de
+> Peukert côté modèle). **Aucun breaking change d'API** ; le comportement de `Ah_total_*`
+> change volontairement (cohérence avec `SoC_coulomb`).
+>
+> **v1.7.2** — **« le coulomb est la référence »** : `fuseSoC()` ne pondère plus par la
+> confiance et `alpha = 1` en BULK/ABSORPTION/DISCHARGE (SoC fusionné = SoC coulomb, factuel),
+> alpha faible au repos (FLOAT 0 · REST_LONG 0.02 · REST 0.10) → **fin du saut de SoC**
+> quand la confiance montait en phase Convergence (cas 80 % coulomb / 95 % tension :
+> 92,15 % en COARSE → 80,75 % en TRACK, soit ~11 % de saut). Corollaire :
+> `correctVoltageToOCV(..., soc_ref)` reçoit désormais `SoC_coulomb` → fin de l'emballement
+> `SoC_voltage = 100 %` sous charge. `KALMAN_COARSE_ALPHA_MIN` supprimé. Ajout de la macro
+> `__BATTERYKALMAN_H_VERSION__` (source unique de version). **Aucun breaking change.**
+>
+> **v1.7.1** — Ajout de l'**état persistable de l'observateur passif** : accesseurs
+> `getRegressionRing()`/`setRegressionRing()` (ring P2) et `setPseudoRestEvents()`
+> (compteur P1), pour sauver/restaurer P1/P2 dans votre stockage. Aucun breaking change.
+>
 > **v1.7.0** — Chasse aux bugs (K1–K12, R1–R7) + observateur passif (P1/P2) :
 > 12 correctifs d'algorithme/état, **seuil de planéité REST_LONG auto-adaptatif au bruit
 > de mesure** (R6), **profil REST_LONG par technologie** via `applyRecommendedRestLong()`
 > (R7), **mode pseudo-repos** `enablePseudoRest()` (P1) et **régression de capacité
 > pondérée** (P2). L'algorithme EKF a été **vérifié mathématiquement sur 4 sources**
-> (§ *Principe de fonctionnement*). Aucun breaking change. Détails :
+> (§ *Principe de fonctionnement*). Détails :
 > [`CHANGELOG.md`](CHANGELOG.md) (Annexe K/R) et [`doc/rest_long_tuning.md`](doc/rest_long_tuning.md).
 
 > **v1.6.0** — Configuration par technologie : le filtre consomme
 > `model->getKalmanTuning()` (P/Q/R, seuils de segment, REST_LONG, confiance)
 > avec une hiérarchie **setter runtime > modèle > macros compile-time > défaut**.
-> Rétro-compatible : sans setter ni BatteryModels v1.4+, comportement v1.5.3.
+> Rétro-compatible : sans setter ni BatteryModels v1.6.9+, comportement v1.5.3.
 > Voir [`CHANGELOG.md`](CHANGELOG.md) et la comparaison détaillée dans [`doc/comparaison_kalman.md`](doc/comparaison_kalman.md).
 
 Cette librairie est **technologie-agnostique** et utilise une **interface `BatteryModel` concrète** pour les paramètres spécifiques (OCV, résistances, courbes de charge, etc.).
 
-### 💚 Compatible avec [BatteryModels v1.4+](https://github.com/Fo170/BatteryModels)
+### 💚 Compatible avec [BatteryModels v1.6.9+](https://github.com/Fo170/BatteryModels)
 
 [**BatteryModels**](https://github.com/Fo170/BatteryModels) est une implémentation **recommandée et totalement compatible** de l'interface `BatteryModel`.
 Les réglages Kalman (P/Q/R, seuils, REST_LONG, confiance) sont fournis **par technologie** via `getKalmanTuning()`.
@@ -42,7 +65,7 @@ Vous pouvez aussi utiliser:
 
 **Official Repository**: [**https://github.com/Fo170/BatteryKalman**](https://github.com/Fo170/BatteryKalman)
 
-- **Main Branch**: Latest stable release (v1.7.0)
+- **Main Branch**: Latest stable release (v1.7.3)
 - **License**: GNU General Public License v3
 - **Issue Tracker**: [GitHub Issues](https://github.com/Fo170/BatteryKalman/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/Fo170/BatteryKalman/discussions)
@@ -58,7 +81,7 @@ git checkout main
 
 - [Installation](#-installation)
 - [Dépendances & matériel](#-dépendances--matériel)
-- [Caractéristiques](#-caractéristiques-v170)
+- [Caractéristiques](#-caractéristiques-v172)
 - [Phases d'apprentissage](#-phases-dapprentissage)
 - [Principe de fonctionnement (EKF 2D)](#-principe-de-fonctionnement--algorithme-ekf-2d)
 - [Tuning recommandé](#-tuning-recommandé)
@@ -71,18 +94,18 @@ git checkout main
 
 ## 📦 Installation
 
-### 🟢 Interface BatteryModel Requise (Recommandé: BatteryModels v1.4+)
+### 🟢 Interface BatteryModel Requise (Recommandé: BatteryModels v1.6.9+)
 
 BatteryKalman **REQUIRE** une classe implémentant l'interface `BatteryModel`.
-**Recommandé**: [BatteryModels v1.4+](https://github.com/Fo170/BatteryModels) - fully compatible
+**Recommandé**: [BatteryModels v1.6.9+](https://github.com/Fo170/BatteryModels) - fully compatible
 
 ### Installation (PlatformIO) - Recommandé
 
 ```ini
 [env:your_board]
 lib_deps =
-    Fo170/BatteryModels >= 1.4      # ← Implémentation BatteryModel (recommandée)
-    Fo170/BatteryKalman >= 1.7.0    # Extended Kalman Filter
+    Fo170/BatteryModels >= 1.6.9    # ← Implémentation BatteryModel (recommandée, soc_ref requis)
+    Fo170/BatteryKalman >= 1.7.3    # Extended Kalman Filter
     Fo170/CoulombsAh >= 1.1         # Compteur coulombs (Coulomb.h)
 ```
 
@@ -91,12 +114,12 @@ lib_deps =
 1. **Installer BatteryModels** (recommandé):
    - Sketch → Include Library → Manage Libraries
    - Chercher "BatteryModels"
-   - Installer v1.4 ou plus récent
+   - Installer v1.6.9 ou plus récent
 
 2. **Installer BatteryKalman**:
    - Sketch → Include Library → Manage Libraries
    - Chercher "BatteryKalman"
-   - Installer v1.7.0 ou plus récent
+   - Installer v1.7.3 ou plus récent
 
 3. **Installer CoulombsAh** (obligatoire, `Coulomb.h`):
    - Chercher "CoulombsAh" → Installer v1.1+
@@ -133,7 +156,7 @@ KalmanState2D kalmanState;
 // Compteur coulombs (CoulombsAh v1.1+)
 Coulomb coulomb;
 
-// Filtre Kalman (API v1.7.0 : SoCData + KalmanState2D + BatteryModel + Coulomb)
+// Filtre Kalman (API v1.7.3 : SoCData + KalmanState2D + BatteryModel + Coulomb)
 BatteryKalman battery(&socData, &kalmanState, &model, &coulomb);
 
 // Profil REST_LONG adapté à la technologie (plomb 30 min, Li-ion 15 min, ...)
@@ -169,7 +192,7 @@ bool isAutoDetect();
 bool isOcvReliable();
 ```
 
-> La v1.6.0 consomme en plus `model->getKalmanTuning()` (BatteryModels v1.4+), optionnel.
+> La v1.6.0 consomme en plus `model->getKalmanTuning()` (BatteryModels v1.6.9+), optionnel.
 
 ### `Coulomb` (obligatoire)
 
@@ -199,8 +222,8 @@ Nécessaire uniquement pour la persistance JSON de l'exemple `Exemples/avec_pers
 | Composant | Min | Recommandé | Testé max |
 |-----------|-----|------------|-----------|
 | Arduino IDE | 1.8.13 | 2.0+ | 2.3 |
-| BatteryModels | **1.4** | 1.4+ | 1.6 |
-| BatteryKalman | **1.7.0** | 1.7.0 | 1.7.0 |
+| BatteryModels | **1.6.9** | 1.6.9+ | 1.6.9 |
+| BatteryKalman | **1.7.3** | 1.7.3 | 1.7.3 |
 | CoulombsAh (`Coulomb.h`) | 1.1 | 1.1+ | 1.1+ |
 | ArduinoJson | 6.18 | 6.20+ | 7.0 |
 
@@ -208,12 +231,12 @@ Nécessaire uniquement pour la persistance JSON de l'exemple `Exemples/avec_pers
 
 | Erreur | Cause | Solution |
 |---|---|---|
-| `BatteryModels.h: No such file` | BatteryModels non installé | Library Manager → installer v1.4+ |
+| `BatteryModels.h: No such file` | BatteryModels non installé | Library Manager → installer v1.6.9+ |
 | `detectChargeState undefined` | BatteryModels < v1.3 | Mettre à jour (API renommée en v1.2) |
 | `Coulomb not found` | CoulombsAh non installé | Installer [Fo170/CoulombsAh](https://github.com/Fo170/CoulombsAh) v1.1+ |
 | `out of memory` (Uno) | RAM insuffisante | Utiliser ESP32, ou réduire les buffers |
 
-## 📋 Caractéristiques (v1.7.0)
+## 📋 Caractéristiques (v1.7.3)
 
 ### Kalman Filter
 - **Extended Kalman Filter 2D** : Estime simultanément capacité + taux vieillissement
@@ -225,6 +248,9 @@ Nécessaire uniquement pour la persistance JSON de l'exemple `Exemples/avec_pers
 - **✨ v1.7.0 (R6/R7)** : seuil de planéité REST_LONG adapté au **bruit de mesure** ; **profil REST_LONG par technologie** via `applyRecommendedRestLong()` (plomb 30 min / Li-ion 15 min / …)
 - **✨ v1.7.0 (P1/P2)** : **mode pseudo-repos** opt-in (`enablePseudoRest()`) et **régression de capacité pondérée** (`getRegressionCapacity()`, …)
 - **🐛 Corrections v1.7.0 (K1–K12)** : anneau de stabilité REST rotatif, REST_LONG stable, signe du vieillissement, underflow `millis()`, **apprentissage du vieillissement réellement effectif** (accumulation des cycles), **resynchronisation `last_Ah` à la restauration** (K8), **porte temporelle du cutoff basse tension** (K9), **tolérance au wrap `millis()`** (K11) — voir [`CHANGELOG.md`](CHANGELOG.md) (Annexe K/R)
+- **✨ v1.7.1** : état P1/P2 **persistable** (`getRegressionRing()` / `setRegressionRing()` / `getRegressionMaxPoints()` / `setPseudoRestEvents()`)
+- **🐛 v1.7.2** : fusion SoC **sans pondération par la confiance** (« le coulomb est la référence », `alpha = 1` en charge/décharge) et `soc_ref` transmis à `correctVoltageToOCV()` — plus de saut de SoC en phase Convergence, plus d'emballement `SoC_voltage = 100 %` sous charge
+- **🐛 v1.7.3** : **compteurs Ah réconciliés avec le SoC** — `Ah_total_charged`/`Ah_total_discharged` dérivent du `dAh` corrigé (rendement η) au lieu de `I` brut + `0,98` codé en dur (écart de 1,7-1,9× à 5 A) ; ajout de `getCoulombMeter()` pour exposer le η réellement appliqué
 
 ### Batterie
 - **Technologie-agnostique** : fonctionne avec tout type batterie via `BatteryModel`
@@ -314,7 +340,26 @@ setter runtime > modèle > macros > défaut.
 - **Confiance continue** : $\text{conf} = \tfrac{1}{2}\big(\min(1, n/10) + (1 - \min(1, P_{00}/P_{init}))\big) \in [0,1]$.
 - **Rejet d'outliers** 3-σ + détection de remplacement batterie.
 - **Fusion SoC** (filtre complémentaire, pas Kalman) : $SoC_{fused} = \alpha\,SoC_{coulomb} + (1-\alpha)\,SoC_{tension}$,
-  avec $\alpha$ dépendant de l'état de charge (FLOAT/REST_LONG → tension ; BULK/DISCHARGE → coulomb).
+  avec $\alpha$ dépendant de l'état de charge. **Depuis la v1.7.2 il n'y a plus de pondération
+  par la confiance** ($\alpha$ n'est plus multiplié par `kalman->confidence`) : le comptage
+  coulomb est la **référence factuelle** et l'OCV n'ancre le SoC qu'au repos.
+
+  | État | $\alpha$ | Sens |
+  |---|---|---|
+  | `State_FLOAT` | 0.00 | ancre « 100 % » (tension seule) |
+  | `State_REST_LONG` | 0.02 | OCV très fiable (repos stabilisé) |
+  | `State_REST` | 0.10 | OCV fiable (repos court) |
+  | `State_BULK` / `State_ABSORPTION` / `State_DISCHARGE` / `State_UNKNOWN` | **1.00** | SoC fusionné = SoC coulomb |
+
+  ⚠️ Ne **pas** réintroduire `alpha_base * confidence` : en phase Convergence (conf < 0.30)
+  $\alpha$ tombait à ~0.19, donc la fusion repassait à ~81 % sur la tension → saut de SoC
+  d'une dizaine de % quand la confiance remontait. `KALMAN_COARSE_ALPHA_MIN` a été supprimé
+  avec ce changement.
+- **Référence de l'OCV corrigé** : `update()` appelle
+  `model->correctVoltageToOCV(V, I, T, dt, &r_int_eff, nullptr, data->SoC_coulomb)`.
+  Le 7ᵉ argument (`soc_ref`) sert à dimensionner `R_soc`/`R_int` sur le SoC **coulomb** et non
+  sur un SoC dérivé de la tension terminale (qui saturait `R_soc` à `R_soc_max` sous charge →
+  emballement de `SoC_voltage` vers 100 %). **Requiert BatteryModels ≥ 1.6.9.**
 - **Dérive de vieillissement (K7)** : les cycles sont **accumulés entre deux mesures**
   (`cycles_since_update`) et appliqués à la prédiction. Sans cette accumulation, $n \approx 0$
   à la mesure et $a$ n'est jamais appris (la covariance croisée $P_{10}$ reste nulle).
@@ -343,7 +388,7 @@ erreurs. Le bug d'apprentissage du vieillissement (K7) est corrigé — voir
 
 ## 🎛️ Tuning recommandé
 
-Les réglages se font par technologie via `model->getKalmanTuning()` (BatteryModels v1.4+),
+Les réglages se font par technologie via `model->getKalmanTuning()` (BatteryModels v1.6.9+),
 ou par les setters runtime (`setP/setQ/setR/setSegmentThresholds/setRestLong/setConfidence`).
 Les macros compile-time restent un moyen global de forcer un réglage avant `#include`.
 
@@ -427,6 +472,29 @@ régression et **recalent** l'estimation, sans effacer l'historique des cycles d
 
 **Principe** : chaque jour, l'ancre haute (FLOAT = 100 %) et l'ancre basse (pseudo-repos) donnent
 un point. Le bruit s'annule sur N points (σ/√N). 100 % passif.
+
+### 💾 Persistance de la régression (v1.7.1)
+
+Le ring P2 (`reg_dsoc[]`/`reg_dah[]`) et le compteur d'événements P1 vivent en RAM : sans
+sauvegarde, ils repartent de zéro à chaque reboot. La classe ne persiste pas elle-même
+(`saveState()`/`loadState()` restent des stubs), mais expose l'état pour un stockage utilisateur :
+
+```cpp
+static float dsoc[BatteryKalman::getRegressionMaxPoints()];   // ou REG_MAX_POINTS
+static float dah [BatteryKalman::getRegressionMaxPoints()];
+
+// Sauvegarde (ex. FRAM) :
+uint8_t n = battery.getRegressionRing(dsoc, dah);      // n = points valides
+uint16_t ev = battery.getPseudoRestEvents();
+// ... écrire n, ev, dsoc[0..n), dah[0..n) dans votre stockage ...
+
+// Restauration (APRÈS begin()/enablePseudoRest()) :
+battery.setRegressionRing(dsoc, dah, n);               // ordre indifférent
+battery.setPseudoRestEvents(ev);
+```
+
+La régression étant invariante par permutation des points, l'ordre chronologique n'est pas
+nécessaire. `getRegressionMaxPoints()` renvoie la taille compile-time du ring (`REG_MAX_POINTS`).
 
 ### 🎯 Recalage par décharge profonde (recommandé)
 
@@ -583,7 +651,7 @@ avancée). BatteryKalman a suivi :
 
 > La v1.6.0 est **additive** : aucune migration requise. Nouveau : `getTuning()`, setters runtime
 > (`setP/setQ/setR/setSegmentThresholds/setBatteryChange/setRestLong/setConfidence/resetTuning`)
-> et consommation de `model->getKalmanTuning()` (BatteryModels v1.4+).
+> et consommation de `model->getKalmanTuning()` (BatteryModels v1.6.9+).
 >
 > La v1.7.0 est également **additive** : aucune migration requise. Nouveau :
 > `applyRecommendedRestLong()` (R7), `enablePseudoRest()` (P1) et
@@ -703,11 +771,27 @@ g++ -std=c++11 -I doc/_syntax -I src -o /tmp/r doc/_repro_restlong_profile.cpp &
 g++ -std=c++11 -I doc/_repro_mocks -I src -o /tmp/r doc/_repro_restore.cpp && /tmp/r        # K8/K9
 g++ -O0 -o /tmp/r doc/_repro_wrap.cpp && /tmp/r                    # K11
 g++ -std=c++11 -I doc/_repro_mocks -I src -o /tmp/r doc/_repro_pseudo_rest.cpp && /tmp/r    # P1/P2
+g++ -std=c++11 -I doc/_repro_mocks -I src -o /tmp/r doc/_repro_fusion.cpp && /tmp/r         # fusion SoC (v1.7.2)
 ```
 
 `doc/_syntax/` contient des en-têtes stub (compile check sans dépendances) ;
 `doc/_repro_mocks/` fournit des mocks fonctionnels (horloge Arduino, compteur coulomb,
 `BatteryModel`) pour `_repro_restore.cpp`. Chaque repro imprime un verdict `AVANT`/`APRES`.
+
+> ⚠️ Les mocks `doc/_syntax/BatteryModels.h` et `doc/_repro_mocks/BatteryModels.h` doivent
+> déclarer la signature **7 arguments** de `correctVoltageToOCV` (avec `float soc_ref = NAN`),
+> sinon `test_bk.cpp`, `_repro_restore.cpp` et `_repro_pseudo_rest.cpp` ne compilent plus.
+
+### Version de la librairie
+
+Le header déclare sa version dans une **source unique**, agrégée par un projet hôte
+(par ex. une page `/version` qui affiche les versions de toutes les libs Fo170) :
+
+```cpp
+#define __BATTERYKALMAN_H_VERSION__ "1.7.3"
+```
+
+`library.json` doit rester aligné sur cette macro (elle fait foi).
 
 ## 📚 Références
 
