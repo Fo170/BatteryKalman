@@ -275,6 +275,84 @@ Nécessaire uniquement pour la persistance JSON de l'exemple `Exemples/avec_pers
 | 2 | Raffinement | ±5-8% | Précision croissante |
 | 3 | Suivi vieillissement | ±3-5% | Précision maximale, suivi de dérive |
 
+## 🐛 Évolutions et corrections — détail (quoi, pourquoi, formule)
+
+> Chaque entrée donne **ce qui était faux**, **pourquoi** et la **formule exacte** avant/après.
+> Sources en fin de document ([Références](#-références)).
+
+### v1.7.3 — 2026-10-18 · compteurs Ah réconciliés avec le SoC
+
+**Ce qui était faux.** Les deux compteurs d'Ah publiés n'utilisaient pas le même courant que le
+SoC, donc ne se réconciliaient plus avec lui :
+
+```
+Ah_total_discharged += (−I) · Δt_h            ← I BRUT
+Ah_total_charged    +=   I  · Δt_h · 0,98     ← I BRUT + 0,98 codé en dur
+SoC_coulomb         += (ΔAh_compteur / C_ref) · 100    ← ΔAh CORRIGÉ (η)
+```
+
+Depuis que `Coulomb` applique un rendement η, `ΔAh_compteur = I·Δt·η` : les compteurs et le SoC
+divergaient d'un facteur **1/η** — soit **1,7× en décharge et 1,9× en charge à 5 A**. Ces compteurs
+sont exposés en UI (`ah_chg` / `ah_dis`) : l'utilisateur voyait des valeurs qui contredisaient le
+SoC et l'autonomie.
+
+**Correctif.** Les deux compteurs dérivent de la **même source** que le SoC (`ΔAh` du compteur) :
+
+```
+ΔAh = Ah_compteur(k) − Ah_compteur(k−1)
+si ΔAh < 0 :  Ah_total_discharged += −ΔAh
+sinon      :  Ah_total_charged    +=  ΔAh
+SoC_coulomb += (ΔAh / C_ref) · 100
+```
+
+Ajout de `getCoulombMeter()` pour que l'UI affiche le η **réellement appliqué** au lieu de
+recalculer la loi depuis `BatteryModel` (qui diverge : η constant côté compteur vs η(I) de Peukert
+côté modèle — corrigé en BatteryModels 1.6.10).
+
+### v1.7.2 — 2026-10-18 · « le coulomb est la référence »
+
+**Ce qui était faux.** `fuseSoC()` pondérait le SoC coulomb par la confiance du filtre. Quand la
+confiance montait en phase Convergence, le poids du SoC **tension** augmentait → **saut de SoC**
+(cas mesuré : 92,15 % en COARSE → 80,75 % en TRACK, soit ~11 % de saut sans aucune mesure réelle).
+
+**Correctif.** `α` ne dépend plus de la confiance mais de l'**état de charge détecté** :
+
+```
+α = 0,00   si State_FLOAT        (ancre 100 %)
+α = 0,02   si State_REST_LONG    (OCV très fiable)
+α = 0,10   si State_REST         (OCV fiable)
+α = 1,00   sinon (BULK/ABSORPTION/DISCHARGE)   → SoC fusionné = SoC coulomb
+
+SoC_fusionné = α·SoC_coulomb + (1 − α)·SoC_voltage
+```
+Corollaire : `correctVoltageToOCV(..., soc_ref)` reçoit désormais `SoC_coulomb` → fin de
+l'emballement `SoC_voltage = 100 %` sous charge. `KALMAN_COARSE_ALPHA_MIN` supprimé.
+
+### v1.7.1 — 2026-10-17 · état P1/P2 persistable
+
+Accesseurs `getRegressionRing()` / `setRegressionRing()` / `getRegressionMaxPoints()` /
+`setPseudoRestEvents()` pour sauver et restaurer les observateurs P1/P2 dans le stockage hôte.
+
+### v1.7.0 — 2026-10-17 · chasse aux bugs (K1–K12, R1–R7) + observateur passif
+
+12 correctifs d'algorithme/état : anneau de stabilité REST rotatif, REST_LONG stable, signe du
+vieillissement, underflow `millis()`, apprentissage du vieillissement réellement effectif
+(accumulation des cycles), resynchronisation `last_Ah` à la restauration (K8), porte temporelle du
+cutoff basse tension (K9), tolérance au wrap `millis()` (K11) ; seuil de planéité REST_LONG
+auto-adaptatif au bruit (R6) et profil REST_LONG par technologie (R7) ; mode pseudo-repos (P1) et
+régression de capacité (P2).
+
+### v1.6.0 — configuration par technologie
+
+P/Q/R, seuils et REST_LONG consommés depuis `model->getKalmanTuning()` (BatteryModels v1.4.0+).
+
+### v1.5.3 — EKF 2D réellement complet
+
+Vieillissement appris, R adaptatif appliqué, transition FLOAT fonctionnelle, porte de stabilité
+REST (F8).
+
+---
+
 ## 🔧 Principe de fonctionnement — algorithme EKF 2D
 
 > 📄 Comparaison détaillée avec le Kalman général et les variantes batteries
@@ -793,6 +871,66 @@ Le header déclare sa version dans une **source unique**, agrégée par un proje
 
 `library.json` doit rester aligné sur cette macro (elle fait foi).
 
+## 🧮 Formules exactes (référence)
+
+> Identiques au code (`src/BatteryKalman.h`). Convention : **`I > 0` = charge**.
+
+### 1. SoC coulomb (intégration du compteur)
+
+```
+ΔAh        = Ah_compteur(k) − Ah_compteur(k−1)         [Ah]  (déjà corrigé de η par Coulomb)
+SoC_coulomb ← clamp( SoC_coulomb + (ΔAh / C_ref)·100 , 0 ; 100 )   [%]
+C_ref       = C_hat  si le Kalman est initialisé et C_hat > 1 Ah, sinon C_nominal
+```
+
+### 2. Fusion SoC (`fuseSoC`)
+
+```
+SoC_fusionné = α·SoC_coulomb + (1 − α)·SoC_voltage
+
+α = 0,00  State_FLOAT
+α = 0,02  State_REST_LONG
+α = 0,10  State_REST
+α = 1,00  BULK / ABSORPTION / DISCHARGE   (défaut)
+```
+> Depuis la v1.7.2, α **ne dépend plus de la confiance** : un changement de phase ne provoque plus
+> de saut de SoC.
+
+### 3. Compteurs Ah publiés (v1.7.3)
+
+```
+si ΔAh < 0 :  Ah_total_discharged += −ΔAh
+sinon      :  Ah_total_charged    +=  ΔAh
+```
+(plus de `0,98` codé en dur : le rendement est porté par `Coulomb`)
+
+### 4. Correction tension → OCV
+
+```
+V_OCV = correctVoltageToOCV(V_terminal, I, T, Δt, …, soc_ref = SoC_coulomb)
+SoC_voltage = ocvToSoc(V_OCV, T)
+```
+La résistance et la polarisation sont retirées par `BatteryModel` (cf. README BatteryModels §3).
+`SoC_voltage` sert d'**ancre** au repos et en fin de charge, jamais de référence en charge/décharge.
+
+### 5. Cycles et vieillissement
+
+```
+Δcycles       = cycles_partiel(k) − cycles_partiel(k−1)
+cycles_cumul += Δcycles                        (sinon Δcycles ≈ 0 et dC/dcycle n'est jamais appris)
+```
+
+### 6. Confiance (phase)
+
+```
+confiance < 0,30  → PHASE_COARSE
+confiance < 0,60  → PHASE_REFINE
+sinon             → PHASE_TRACK
+confiance = 0     → PHASE_BOOTSTRAP (avant initialisation)
+```
+
+---
+
 ## 📚 Références
 
 - **EKF** : Bar-Shalom, Li, Kirubarajan — *Estimation with Applications to Tracking and Navigation*, 2001.
@@ -800,3 +938,19 @@ Le header déclare sa version dans une **source unique**, agrégée par un proje
 - **Process Noise** : Welch & Bishop — *An Introduction to the Kalman Filter*, 2006.
 - **Comparaison théorie/variantes** : [`doc/comparaison_kalman.md`](doc/comparaison_kalman.md) (sources Wikipedia KF/EKF, kalmanfilter.net, MathWorks, papiers AEKF/DEKF/UKF).
 - **Réglage REST_LONG** : [`doc/rest_long_tuning.md`](doc/rest_long_tuning.md).
+
+### Sources en ligne (vérifiées le 2026-10-18, HTTP 200)
+
+| Sujet | Source | Usage dans cette lib |
+|---|---|---|
+| Filtre de Kalman | [Wikipedia — Kalman filter](https://en.wikipedia.org/wiki/Kalman_filter) | Prédiction/correction, gain, covariance |
+| Filtre de Kalman étendu | [Wikipedia — Extended Kalman filter](https://en.wikipedia.org/wiki/Extended_Kalman_filter) | Linéarisation `H`, structure du gain |
+| État de charge | [Wikipedia — State of charge](https://en.wikipedia.org/wiki/State_of_charge) | Définitions SoC/DoD, comptage de coulombs vs OCV |
+| Gestion de batterie | [Wikipedia — Battery management system](https://en.wikipedia.org/wiki/Battery_management_system) | Rôle de l'estimation SoC/SoH |
+| Rendement faradique | [Wikipedia — Faraday efficiency](https://en.wikipedia.org/wiki/Faraday_efficiency) | Justification du rendement appliqué par `Coulomb` (v1.7.3) |
+| Rendement coulombique plomb | [Battery University — BU-808c](https://batteryuniversity.com/article/bu-808c-coulombic-and-energy-efficiency-with-the-battery) | Ordre de grandeur η ≈ 0,90 (plomb) |
+| Batterie plomb-acide | [Wikipedia — Lead–acid battery](https://en.wikipedia.org/wiki/Lead%E2%80%93acid_battery) | Comportement de charge, palier float |
+| Comptage de cycles (Rainflow) | [Wikipedia — Rainflow-counting algorithm](https://en.wikipedia.org/wiki/Rainflow-counting_algorithm) | Observateur P2 / usure par cycles |
+
+> ℹ️ Aucune conclusion de cette lib ne repose sur une source inaccessible : les URL testées en
+> erreur (HTTP 4xx/5xx) ont été écartées.
