@@ -1,36 +1,131 @@
 # Changelog - BatteryKalman
 
-## [1.7.2] - 2026-10-17
+## [1.7.3] - 2026-10-18
 
-### ✨ Added — macro de version `__<LIB>_H_VERSION__`
+### 🐛 Fixed — les compteurs Ah publiés ne se réconciliaient plus avec le SoC (F8)
 
-Chaque header déclare désormais sa version via une macro préprocesseur,
-source **unique** (un projet hôte peut l'agréger, ex. page `/version`).
+`Ah_total_discharged` intégrait `(−I)·dt_h` **brut** et `Ah_total_charged` un
+**0,98 codé en dur**, alors que `SoC_coulomb` utilise le `dAh` **corrigé** (η) du
+compteur. À 5 A les deux divergeaient de **1,7-1,9×** — compteurs exposés en UI
+(`ah_chg`/`ah_dis`) qui contredisaient le SoC et l'autonomie.
 
-### 🏷️ Divers
+Les deux compteurs dérivent désormais de la **même source** (`dAh`).
 
-- Version `1.7.1` → `1.7.2` (`library.json` + `library.properties`)
+### ✨ Added
+
+- `getCoulombMeter()` — accès au compteur `Coulomb`, pour que l'UI affiche le
+  rendement η **réellement appliqué** au lieu de recalculer la loi depuis
+  `BatteryModel` (qui diverge : η constant côté compteur vs η(I) de Peukert).
+
+### ⚠️ Compatibilité
+
+API additive. Le comportement de `Ah_total_*` change volontairement (cohérence
+avec `SoC_coulomb`).
 
 ---
 
-## [1.7.1] - 2026-10-17
+## [1.7.2] - 2026-10-17
 
-### ✨ Added — accesseurs de persistance de l'observateur passif (P1/P2)
+### 🐛 Corrigé — « le coulomb est la référence » (fusion SoC) + référence OCV
 
-Ajouts **additifs** (aucun changement de comportement sans appel) permettant au
-firmware hôte de **persister** l'état de la régression de capacité (P2) et du
-compteur de pseudo-repos (P1) hors de la lib (ex. FRAM sur ESP8266).
+Deux correctifs d'algorithme appliqués en production le **02/10/2026** sur le
+projet consommateur (`Coulometre`, FW v5.4) et publiés ici. Aucun breaking
+change : ni signature publique modifiée, ni nouveau paramètre obligatoire côté
+utilisateur.
 
-| API | Rôle |
-|---|---|
-| `getRegressionRing(buf_dSoC, buf_dAh)` | Exporte le ring de régression P2 (ΔSoC / ΔAh) |
-| `setRegressionRing(buf_dSoC, buf_dAh)` | Restaure le ring après un reboot |
-| `getRegressionMaxPoints()` | Taille du ring (bornée par `REG_MAX_POINTS`) |
-| `getPseudoRestEvents()` | Compteur d'événements P1 (pseudo-repos) |
-| `setPseudoRestEvents(n)` | Restaure le compteur P1 après un reboot |
+#### 1. `fuseSoC()` ne pondère plus par la confiance
 
-Sans ces accesseurs, la régression P2 repartait de zéro à chaque redémarrage
-(perte de plusieurs jours d'apprentissage de capacité).
+Avant, en phase `PHASE_COARSE`, `alpha_fused = alpha_base * kalman->confidence`.
+La confiance démarrant à 0.2, `alpha` tombait à ~0.19 en BULK : la fusion
+repassait à ~81 % sur la **tension**, alors que le comptage coulomb est
+**factuel**. Quand la confiance remontait (COARSE → TRACK), le SoC publié
+sautait brutalement.
+
+Exemple mesuré (SoC coulomb 80 %, SoC tension 95 %) :
+
+| Phase | `alpha` avant | SoC fusionné avant | SoC fusionné après |
+|---|---|---|---|
+| COARSE (conf 0.2) | 0.190 | **92.15 %** | 80.00 % |
+| TRACK (conf 1.0) | 0.950 | 80.75 % | 80.00 % |
+
+→ saut de **~11 %** supprimé.
+
+Nouvelle table (l'OCV n'ancre le SoC qu'au repos, où il est valide) :
+
+| État | `alpha` | Effet |
+|---|---|---|
+| `State_FLOAT` | 0.00 | ancre « 100 % » (tension seule) |
+| `State_REST_LONG` | 0.02 | OCV très fiable (repos stabilisé) |
+| `State_REST` | 0.10 | OCV fiable (repos court) |
+| `State_BULK` / `State_ABSORPTION` / `State_DISCHARGE` / `State_UNKNOWN` | **1.00** | `SoC_fused = SoC_coulomb` |
+
+`KALMAN_COARSE_ALPHA_MIN` (plancher qui existait uniquement pour compenser cette
+pondération) est **supprimé**.
+
+#### 2. `correctVoltageToOCV(..., soc_ref)` — référence = SoC coulomb
+
+`update()` transmet désormais `data->SoC_coulomb` comme 7ᵉ argument.
+Sans cette référence, `BatteryModels` dérivait le SoC de la **tension
+terminale** ; sous charge, hors table OCV, `R_soc` saturait à `R_soc_max` (18),
+la correction `I·R` poussait la tension corrigée au-dessus de l'OCV max et
+`SoC_voltage` **s'emballait à 100 %**.
+
+⚠️ **Dépendance** : requiert **BatteryModels ≥ 1.6.7** (`library.json` mis à jour
+de `>= 1.4.0` à `>= 1.6.7`). Attention : une copie « 1.6.1 » patchée en local a
+circulé dans un projet vendorisé — les releases 1.6.1→1.6.6 publiées n'ont PAS
+le paramètre.
+
+### ✨ Ajouté — macro de version `__BATTERYKALMAN_H_VERSION__`
+
+```cpp
+#define __BATTERYKALMAN_H_VERSION__ "1.7.2"
+```
+
+Source **unique** de la version, agrégeable par un projet hôte (ex. page
+`/version`). `library.json` doit rester aligné.
+
+### 📝 Documentation
+
+- `README.md` : table des `alpha` par état, section « Référence de l'OCV corrigé »,
+  section « Version de la librairie », compatibilité BatteryModels relevée à 1.6.7.
+- `AGENTS.md` : règles 26 (fusion), 27 (`soc_ref`), 28 (buffers de diagnostic) ;
+  règle 9 réécrite (la macro fait foi).
+- `doc/` : les mocks `_syntax/` et `_repro_mocks/` exposent la signature 7 arguments de
+  `correctVoltageToOCV` ; le shim `_syntax/Arduino.h` fournit `micros()` et un `Serial`
+  variadique (compile check contre les **vraies** libs BatteryModels/CoulombsAh) ;
+  **nouveau `doc/_repro_fusion.cpp`** (verrouille la table d'`alpha` et l'indépendance
+  vis-à-vis de la confiance — seul point du correctif qui n'était couvert par aucun test).
+
+### 🏷️ Divers
+
+- Version `1.7.1` → `1.7.2` (`library.json`)
+- Buffers de diagnostic `phase_info`/`last_sync_info`/`last_learn_info` : tailles passées en
+  macros `KALMAN_PHASE_INFO_LEN` (80) / `KALMAN_SYNC_INFO_LEN` (64) /
+  `KALMAN_LEARN_INFO_LEN` (80), surchargeables par `-D` (le projet Coulometre les trime à 24
+  pour son correctif OOM ; la librairie garde les tailles d'origine, sans troncature).
+
+---
+
+## [1.7.1] - 2026-09-27
+
+### ✨ Ajouté — état persistable de l'observateur passif (P1/P2)
+
+La régression P2 (`reg_dsoc[]`/`reg_dah[]`) et le compteur d'événements
+pseudo-repos P1 vivaient uniquement en RAM : ils repartaient de zéro à chaque
+reboot/reflash. Aucune API ne permettait de les sauvegarder.
+
+- **`getRegressionRing(float* dSoC_out, float* dAh_out)`** → copie les points
+  valides du ring et renvoie leur nombre (`0..REG_MAX_POINTS`).
+- **`setRegressionRing(const float* dSoC_in, const float* dAh_in, uint8_t count)`**
+  → restaure le ring (ordonnancement non requis : la régression est invariante
+  par permutation des points).
+- **`getRegressionMaxPoints()`** → taille compile-time du ring (`REG_MAX_POINTS`),
+  pour dimensionner les buffers externes.
+- **`setPseudoRestEvents(uint16_t)`** → restaure le compteur d'événements P1.
+
+La classe ne persiste toujours pas elle-même (`saveState()`/`loadState()` restent
+des stubs à la charge de l'utilisateur) ; ces accesseurs lui permettent de
+sauver/restaurer l'état P1/P2 dans son propre stockage. Aucun breaking change.
 
 ## [1.7.0] - 2026-09-27
 

@@ -74,7 +74,7 @@
 #define BATTERY_KALMAN_H
 
 // Version de la librairie (source UNIQUE — agrégée par src/liste_lib.h)
-#define __BATTERYKALMAN_H_VERSION__ "1.7.2"
+#define __BATTERYKALMAN_H_VERSION__ "1.7.3"
 
 #include <Arduino.h>
 #include <math.h>
@@ -413,9 +413,22 @@ private:
     bool  cycle_initialized = false;
     float last_Ah = 0.0f;
 
-    char  phase_info[24] = "Bootstrap";
-    char  last_sync_info[24] = "aucune";
-    char  last_learn_info[24] = "aucun";
+    // Buffers de diagnostic (getters getPhaseInfo/getLastSyncInfo/getLastLearnInfo).
+    // Surchargeables par -D pour les cibles à RAM serrée : le projet Coulometre
+    // (ESP8266, correctif OOM du 02/10/2026) les trime à 24 o car il n'utilise
+    // pas ces getters. Défauts = tailles d'origine (pas de troncature).
+#ifndef KALMAN_PHASE_INFO_LEN
+#define KALMAN_PHASE_INFO_LEN     80
+#endif
+#ifndef KALMAN_SYNC_INFO_LEN
+#define KALMAN_SYNC_INFO_LEN      64
+#endif
+#ifndef KALMAN_LEARN_INFO_LEN
+#define KALMAN_LEARN_INFO_LEN     80
+#endif
+    char  phase_info[KALMAN_PHASE_INFO_LEN] = "Bootstrap";
+    char  last_sync_info[KALMAN_SYNC_INFO_LEN] = "aucune";
+    char  last_learn_info[KALMAN_LEARN_INFO_LEN] = "aucun";
     float alpha_fused = 0.5f;
 
     struct CycleHistory {
@@ -1074,16 +1087,21 @@ public:
         float dAh = current_Ah - last_Ah;
         last_Ah = current_Ah;
 
-        if (I < 0.0f)
-            data->Ah_total_discharged += (-I) * dt_h;
+        // v1.7.3 (F8) : les compteurs Ah publiés doivent se réconcilier avec le
+        // SoC. Avant, `Ah_total_discharged` intégrait I brut et
+        // `Ah_total_charged` un 0,98 codé en dur, alors que `SoC_coulomb` utilise
+        // le dAh CORRIGÉ (η) du compteur → à 5 A les deux divergeaient de 1,7-1,9×.
+        // On dérive désormais les deux compteurs de la MÊME source (dAh).
+        if (dAh < 0.0f)
+            data->Ah_total_discharged += -dAh;
         else
-            data->Ah_total_charged += I * dt_h * 0.98f;
-
+            data->Ah_total_charged += dAh;
         float C_ref = getEffectiveCapacity();
         if (C_ref > 0.0f) {
             data->SoC_coulomb += (dAh / C_ref) * 100.0f;
             data->SoC_coulomb = constrain(data->SoC_coulomb, 0.0f, 100.0f);
         }
+
 
         // F6: apprentissage Kalman TOUJOURS actif (indépendant de isAutoDetect)
         {
@@ -1206,6 +1224,14 @@ public:
     float getAhIntegrated() {
         return coulombMeter->getAmpereHours();
     }
+
+    /**
+     * @brief Accès au compteur Coulomb (v1.7.3) — permet à l'UI d'afficher le
+     * rendement η RÉELLEMENT appliqué à l'intégration, au lieu de recalculer la
+     * loi depuis `BatteryModel` (qui diverge : η constant côté compteur vs
+     * η(I) de Peukert côté modèle).
+     */
+    Coulomb* getCoulombMeter() { return coulombMeter; }
 
     float getCyclesPartial() { return data->cycles_partial; }
     uint32_t getCyclesFull() { return data->cycles_full; }

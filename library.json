@@ -1,6 +1,6 @@
 {
   "name": "BatteryKalman",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "description": "Algorithme de filtrage de Kalman adaptatif multi-phases pour estimation de capacité et état de charge de batteries",
   "keywords": [
     "kalman",
@@ -37,7 +37,7 @@
   ],
   "headers": "BatteryKalman.h",
   "dependencies": {
-    "Fo170/BatteryModels": ">=1.4.0",
+    "Fo170/BatteryModels": ">=1.6.7",
     "Fo170/CoulombsAh": ">=1.1.0"
   }
 }
