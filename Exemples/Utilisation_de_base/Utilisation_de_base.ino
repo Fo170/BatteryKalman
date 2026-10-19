@@ -19,7 +19,7 @@ void setup() {
     battery.begin();
     battery.applyRecommendedRestLong();  // R7 : profil REST_LONG adapté à la technologie
 
-    Serial.println("BatteryKalman v1.7.0 démarré");
+    Serial.println("BatteryKalman v1.7.2 démarré");
     Serial.print("Technologie: ");
     Serial.println(model.getTechnologyName());
 }
@@ -44,7 +44,7 @@ void loop() {
         //    si vous fournissez l'intervalle vous-même.
         coulomb.addMeasurement(current);
 
-        // 2) Mise à jour Kalman — API v1.7.0: update(V, I, T)
+        // 2) Mise à jour Kalman — API v1.7.2: update(V, I, T)
         battery.update(voltage, current, temp);
 
         // Résultats

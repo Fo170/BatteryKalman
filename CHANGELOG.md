@@ -1,5 +1,65 @@
 # Changelog - BatteryKalman
 
+## [1.8.1] - 2026-10-19
+
+### 🐛 Fixed — réarmement de `state_entry_ms` et réalignement REST
+
+**#44 — `state_entry_ms` réarmé par un seul échantillon bruité.**
+`detectChargeState()` utilise un deadband dur de ±0,05 A alors que le courant
+de repos réel de l'installation de référence vaut **0,035 A**. Un seul
+échantillon à −0,055 A faisait basculer REST→Discharge et remettait la
+minuterie à zéro. Conséquences : la rampe de fusion (`REST_FUSE_START_MS`) ne
+s'activait **jamais**, et `REST_LONG` (même minuterie) n'était **jamais**
+atteint — donc le `doSync` « Long rest OCV » ne partait pas non plus.
+→ Un nouvel état doit se maintenir `STATE_CONFIRM_MS` (3 s) avant de réarmer la
+minuterie.
+
+**#46 — `handleSyncEvents()` contournait la fusion.**
+`SoC_coulomb = 0,9·SoC_coulomb + 0,1·SoC_voltage` toutes les
+`REST_ALIGN_SYNC_MS` (= 300 000 ms = exactement `REST_FUSE_START_MS`) modifiait
+**directement** le SoC coulomb, sans rampe ni plafond et sans poser
+`state_dirty`. La rampe introduite en 1.8.0 était donc neutralisée : le saut de
+SoC était déplacé de `SoC_fused` vers `SoC_coulomb` (−0,91 pt toutes les 5 min,
+soit −5,5 pt sur 30 min). → Réalignement supprimé ; la fusion en REST est
+assurée **uniquement** par `fuseSoC()`. Le cutoff basse tension reste un
+`doSync()` explicite (c'est une protection, pas un recalage).
+
+**#51 — comparaison OCV@T vs V_min@25 °C.**
+`total_ocv < getMinVoltage()` comparait un OCV à la température de mesure à une
+tension minimale définie à 25 °C → cutoff décalé de `dVocv_dT·(T−25)`
+(≈ −45 mV pack à 5 °C). L'OCV est désormais ramené à 25 °C avant comparaison.
+
+## [1.8.0] - 2026-10-19
+
+### ✨ Added — fusion REST progressive (D1)
+
+`fuseSoC()` appliquait `alpha = 0,10` **dès la première seconde** de
+`State_REST` : le SoC publié devenait 90 % piloté par la tension alors que la
+polarisation n'était pas relaxée (τ_pol ≈ 12 s, τ2 = 300 s, τ_hyst = 2000 s ⇒
+~4 h pour l'équilibre).
+
+**Mesure du 19/10/2026 à 09:00** (repos de 15 min à 0,035 A après 14 h de
+décharge) : `SoC_fused = 0,1×61,6 + 0,9×51,5 = 52,5 %` au lieu de **61,6 %**
+→ saut de **−9,1 points** sur le SoC publié, et l'autonomie suivait (−2,35 Ah).
+
+**Correctif** — rampe temporelle continue :
+
+| Durée en `State_REST` | `alpha` |
+|---|---|
+| < 5 min (`REST_FUSE_START_MS`) | 1,00 — coulomb seul |
+| 5 → 30 min (`REST_FUSE_FULL_MS`) | rampe linéaire 1,00 → 0,10 |
+| ≥ 30 min | 0,10 — OCV considérée fiable |
+
+Plus un **plafond de correction** (`REST_FUSE_MAX_DELTA_PCT` = 2,0 points) :
+même une ancre OCV aberrante ne peut plus faire « sauter » le SoC, elle le fait
+converger.
+
+### ⚠️ Compatibilité
+
+Nouvelles macros surchargeables : `REST_FUSE_START_MS`, `REST_FUSE_FULL_MS`,
+`REST_FUSE_MAX_DELTA_PCT`, `STATE_CONFIRM_MS`. Comportement inchangé hors
+`State_REST`.
+
 ## [1.7.4] - 2026-10-18
 
 ### 🐛 Fixed — pseudo-repos validé après 0,2 s au lieu de plusieurs minutes (B3)

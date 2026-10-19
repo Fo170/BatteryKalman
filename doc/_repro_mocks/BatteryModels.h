@@ -38,7 +38,7 @@ public:
         if (I > 0.05f) return State_BULK;
         return State_UNKNOWN;
     }
-    float correctVoltageToOCV(float V, float, float, float, float* r, float*) { if (r) *r = 0.0f; return useAuto ? V : ocvOut; }
+    float correctVoltageToOCV(float V, float, float, float, float* r, float*, float soc_ref = NAN) { (void)soc_ref; if (r) *r = 0.0f; return useAuto ? V : ocvOut; }
     float ocvToSoc(float V, float) const {
         static const float T[][2] = {{11.80f,0},{11.90f,20},{12.05f,40},{12.25f,60},{12.45f,80},{12.70f,100}};
         if (V <= T[0][0]) return 0.0f;

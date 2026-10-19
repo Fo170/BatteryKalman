@@ -23,7 +23,7 @@ public:
     const char* _stubName = "stub";
     void setStubName(const char* n) { _stubName = n; }
     ChargeState detectChargeState(float, float, float) const { return State_REST; }
-    float correctVoltageToOCV(float V, float, float, float, float* r, float*) { if (r) *r = 0.0f; return V; }
+    float correctVoltageToOCV(float V, float, float, float, float* r, float*, float soc_ref = NAN) { (void)soc_ref; if (r) *r = 0.0f; return V; }
     float ocvToSoc(float, float) const { return 50.0f; }
     uint8_t getCellCount() const { return 4; }
     float getNominalCapacity() const { return 100.0f; }

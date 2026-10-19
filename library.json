@@ -1,6 +1,6 @@
 {
   "name": "BatteryKalman",
-  "version": "1.7.4",
+  "version": "1.8.1",
   "description": "Algorithme de filtrage de Kalman adaptatif multi-phases pour estimation de capacite et etat de charge de batteries. v1.7.3 : compteurs Ah reconcilies avec le SoC (Ah_total_charged/discharged derivent du dAh corrige par le rendement eta, au lieu de I brut + 0.98 code en dur) + getCoulombMeter() pour exposer le eta reellement applique. v1.7.2 : fusion SoC sans ponderation par la confiance (le coulomb est la reference). v1.7.1 : etat P1/P2 persistable. v1.7.0 : chasse aux bugs K1-K12/R1-R7 + observateur passif.",
   "keywords": [
     "kalman",

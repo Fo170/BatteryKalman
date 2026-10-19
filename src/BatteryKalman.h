@@ -74,7 +74,7 @@
 #define BATTERY_KALMAN_H
 
 // Version de la librairie (source UNIQUE — agrégée par src/liste_lib.h)
-#define __BATTERYKALMAN_H_VERSION__ "1.7.4"
+#define __BATTERYKALMAN_H_VERSION__ "1.8.1"
 
 #include <Arduino.h>
 #include <math.h>
@@ -194,6 +194,30 @@
 #ifndef REST_LONG_SYNC_MS
 #define REST_LONG_SYNC_MS       1800000UL   // délai entre 2 synchros REST_LONG (hors tuning)
 #endif
+#ifndef STATE_CONFIRM_MS
+// v1.8.1 (#44) — durée pendant laquelle un nouvel état doit se maintenir avant
+// de réarmer `state_entry_ms`. Couvre le bruit de courant (±20 mA crête) face
+// au deadband de détection (±50 mA) : un aller-retour parasite d'un échantillon
+// ne remet plus la minuterie à zéro.
+#define STATE_CONFIRM_MS         3000UL   // 3 s
+#endif
+
+#ifndef REST_FUSE_START_MS
+// v1.8.0 (D1) — début de la fusion tension↔coulomb en State_REST.
+// Avant ce délai, la polarisation n'est pas relaxée : le coulomb seul fait foi.
+#define REST_FUSE_START_MS       300000UL   // 5 min
+#endif
+#ifndef REST_FUSE_FULL_MS
+// v1.8.0 (D1) — fin de la rampe : au-delà, la fusion atteint son poids nominal
+// (alpha = 0,10, soit 90 % tension). Aligné sur τ_hyst ≈ 2000 s + marge.
+#define REST_FUSE_FULL_MS        1800000UL  // 30 min
+#endif
+#ifndef REST_FUSE_MAX_DELTA_PCT
+// v1.8.0 (D1 bis) — déplacement maximal du SoC publié par rapport au coulomb,
+// en points de %, lors d'une fusion partielle. Empêche tout « saut » de SoC.
+#define REST_FUSE_MAX_DELTA_PCT  2.0f
+#endif
+
 #ifndef REST_ALIGN_SYNC_MS
 #define REST_ALIGN_SYNC_MS      300000UL    // délai d'alignement SoC au repos (hors tuning) — sert aussi de porte au cutoff basse tension (K9)
 #endif
@@ -377,6 +401,10 @@ private:
     ChargeState mppt_state_prev = State_UNKNOWN;
     ChargeState mppt_raw_prev = State_UNKNOWN;
     uint32_t  state_entry_ms = 0;
+    float     temp_c_last = 25.0f;   // v1.8.1 : dernière T mesurée (°C)
+    // v1.8.1 (#44) : confirmation d'état avant réarmement de la minuterie.
+    uint32_t  _stateCandidateSince = 0;
+    ChargeState _stateCandidate = State_UNKNOWN;
     // F8: suivi de stabilité de tension pour la détection REST_LONG
     float     rest_v_ring[REST_LONG_STABLE_MAX_SAMPLES] = {0.0f};
     uint32_t  rest_v_ring_ms[REST_LONG_STABLE_MAX_SAMPLES] = {0};
@@ -757,10 +785,30 @@ private:
         // de transition (FLOAT/REST_LONG) dans handleSyncEvents,
         // updateSegmentAndKalman et updateCycleDetection devient possible.
         // mppt_state_prev sera mis à jour en FIN de update().
+        // ⚠️ v1.8.1 (#44) — RÉARMEMENT AVEC HYSTÉRÉSIS.
+        // Avant, `state_entry_ms` repartait à zéro au MOINDRE changement d'état
+        // brut. Or `detectChargeState()` utilise un deadband dur de ±0,05 A
+        // alors que le courant de repos réel de cette installation vaut 0,035 A :
+        // un SEUL échantillon bruité à −0,055 A faisait basculer REST→Discharge
+        // et remettait la minuterie à zéro. Conséquences :
+        //   • la rampe de fusion (REST_FUSE_START_MS) ne s'activait JAMAIS ;
+        //   • REST_LONG (même minuterie) n'était jamais atteint, donc le doSync
+        //     « Long rest OCV » ne partait jamais non plus.
+        // Nouvelle règle : l'état doit rester DIFFÉRENT pendant
+        // STATE_CONFIRM_MS avant de réarmer la minuterie. Un aller-retour
+        // parasite (bruit) ne réinitialise donc plus rien.
         if (mppt_state != mppt_raw_prev) {
-            state_entry_ms = millis();
+            if (mppt_state != _stateCandidate) {
+                _stateCandidate      = mppt_state;
+                _stateCandidateSince = millis();
+            } else if (millis() - _stateCandidateSince >= STATE_CONFIRM_MS) {
+                state_entry_ms   = _stateCandidateSince;
+                mppt_raw_prev    = mppt_state;
+            }
+        } else {
+            // Retour à l'état stable : on abandonne la candidature en cours.
+            _stateCandidate = mppt_state;
         }
-        mppt_raw_prev = mppt_state;
 
         // --- F8: porte de stabilité pour REST -> REST_LONG ---
         // On alimente un anneau (temps, tension); REST_LONG n'est atteint
@@ -844,7 +892,7 @@ private:
         }
     }
 
-    void handleSyncEvents(float V_cell_ocv) {
+    void handleSyncEvents(float V_cell_ocv, float temp_c_meas = 25.0f) {
         float total_ocv = V_cell_ocv * model->getCellCount();
         const KalmanTuning& t = getTuning();
 
@@ -863,7 +911,18 @@ private:
             return;
         }
 
+        // v1.8.1 (#51) — `total_ocv` est un OCV À LA TEMPÉRATURE DE MESURE (cf.
+        // BatteryModels 1.6.11), alors que `getMinVoltage()` est défini à 25 °C.
+        // Comparer les deux décale le cutoff de dVocv_dT·(T−25) (≈ −45 mV pack à
+        // 5 °C). On ramène donc l'OCV à 25 °C avant comparaison.
         float min_voltage = model->getMinVoltage();
+        {
+            // removeThermalCorrectionOCV attend une tension PAR CELLULE
+            float per_cell = model->removeThermalCorrectionOCV(
+                                 total_ocv / model->getCellCount(), temp_c_meas)
+                             * model->getCellCount();
+            if (isfinite(per_cell) && per_cell > 0.0f) total_ocv = per_cell;
+        }
         // K9 CORRECTION: porte temporelle sur le cutoff basse tension. Sans elle,
         // doSync() était appelé à CHAQUE échantillon tant que la batterie restait
         // au repos sous V_min → state_dirty permanent (écriture persistance en
@@ -875,10 +934,23 @@ private:
             return;
         }
 
-        if (mppt_state == State_REST && millis() - data->last_sync_time > REST_ALIGN_SYNC_MS) {
-            data->SoC_coulomb = 0.90f * data->SoC_coulomb + 0.10f * data->SoC_voltage;
-            data->last_sync_time = millis();
-        }
+        // ⚠️ v1.8.1 (D1 ter) — CETTE RÉALIGNEMENT EST SUPPRIMÉ.
+        // Il faisait `SoC_coulomb = 0,9·SoC_coulomb + 0,1·SoC_voltage` toutes les
+        // REST_ALIGN_SYNC_MS (= 300 000 ms = exactement REST_FUSE_START_MS),
+        // c'est-à-dire qu'il modifiait DIRECTEMENT le SoC coulomb en contournant
+        // complètement `fuseSoC()`. Conséquence : la rampe progressive et le
+        // plafond ±2 pt introduits en 1.8.0 étaient neutralisés — le « saut » de
+        // SoC n'était pas supprimé, il était DÉPLACÉ de SoC_fused vers
+        // SoC_coulomb (mesuré le 19/10 : −0,91 pt toutes les 5 min, soit −5,5 pt
+        // sur 30 min, sans rampe ni plafond, et sans poser `state_dirty`).
+        //
+        // La fusion tension↔coulomb en REST est désormais assurée UNIQUEMENT par
+        // `fuseSoC()`, qui porte la rampe temporelle et le plafond. Le coulomb
+        // reste ainsi la référence factuelle (principe du 02/10/2026).
+        //
+        // ⚠️ Le cutoff basse tension (bloc précédent) reste, lui, un `doSync()`
+        // explicite : c'est une protection, pas un recalage progressif.
+        (void)0;
     }
 
     void doSync(float new_SoC, float confidence, const char* reason) {
@@ -917,12 +989,56 @@ private:
         switch (mppt_state) {
             case State_FLOAT:      alpha_base = 0.00f; break;  // ancre 100 %
             case State_REST_LONG:  alpha_base = 0.02f; break;  // OCV très fiable (repos)
-            case State_REST:       alpha_base = 0.10f; break;  // OCV fiable (repos)
+            case State_REST:
+                // ⚠️ v1.8.0 (D1) — fusion PROGRESSIVE selon la durée du repos.
+                // Avant, alpha_base valait 0,10 DÈS la première seconde de
+                // State_REST : le SoC publié devenait 90 % piloté par la tension
+                // alors que la polarisation n'était pas relaxée (τ_pol ≈ 12 s,
+                // τ2 = 300 s, τ_hyst = 2000 s ⇒ il faut ~4 h pour l'équilibre).
+                // Mesure du 19/10/2026 à 09:00 (repos de 15 min à 0,035 A après
+                // 14 h de décharge) : SoC_fused = 0,1·61,6 + 0,9·51,5 = 52,5 %
+                // au lieu de 61,6 % → saut de −9,1 points sur le SoC publié, et
+                // l'autonomie (getAhAvailable) suivait (−2,35 Ah).
+                //
+                // Nouvelle pondération, continue en durée :
+                //   [0 ; REST_FUSE_START[   : alpha = 1,00 (coulomb seul)
+                //   [START ; REST_FUSE_FULL[ : rampe linéaire 1,00 → 0,10
+                //   ≥ REST_FUSE_FULL        : alpha = 0,10 (OCV considérée fiable)
+                {
+                    uint32_t rest_ms = millis() - state_entry_ms;
+                    if (rest_ms < REST_FUSE_START_MS) {
+                        alpha_base = 1.00f;
+                    } else if (rest_ms < REST_FUSE_FULL_MS) {
+                        float t = (float)(rest_ms - REST_FUSE_START_MS)
+                                / (float)(REST_FUSE_FULL_MS - REST_FUSE_START_MS);
+                        alpha_base = 1.00f - (1.00f - 0.10f) * t;
+                    } else {
+                        alpha_base = 0.10f;
+                    }
+                }
+                break;
             default:               alpha_base = 1.00f; break;  // BULK/ABSORPTION/DISCHARGE → coulomb
         }
         alpha_fused = alpha_base;
 
-        return alpha_fused * data->SoC_coulomb + (1.0f - alpha_fused) * data->SoC_voltage;
+        float fused = alpha_fused * data->SoC_coulomb + (1.0f - alpha_fused) * data->SoC_voltage;
+
+        // ⚠️ v1.8.0 (D1 bis) — PLAFOND de correction par cycle.
+        // Même avec la rampe ci-dessus, une ancre OCV aberrante (polarisation
+        // résiduelle, offset de mesure) peut déplacer le SoC publié de plusieurs
+        // points. On borne le DÉPLACEMENT à REST_FUSE_MAX_DELTA_PCT points par
+        // rapport au coulomb : le SoC ne peut plus « sauter », il converge.
+        // (Seules les fusions partielles sont plafonnées : en FLOAT alpha=0 est
+        // une ancre dure voulue, en BULK/DISCHARGE alpha=1 est un no-op.)
+        if (alpha_fused > 0.0f && alpha_fused < 1.0f) {
+            float delta = fused - data->SoC_coulomb;
+            if (delta >  REST_FUSE_MAX_DELTA_PCT) fused = data->SoC_coulomb + REST_FUSE_MAX_DELTA_PCT;
+            if (delta < -REST_FUSE_MAX_DELTA_PCT) fused = data->SoC_coulomb - REST_FUSE_MAX_DELTA_PCT;
+            if (fused < 0.0f)   fused = 0.0f;
+            if (fused > 100.0f) fused = 100.0f;
+        }
+
+        return fused;
     }
 
     float computeUncertainty() {
@@ -1080,6 +1196,7 @@ public:
     // MISE À JOUR PRINCIPALE
     // ============================================================
     void update(float V, float I, float T) {
+        temp_c_last = T;
         float dt_s = coulombMeter->getLastInterval();
         if (dt_s <= 0) dt_s = 0.1f;
         float dt_h = dt_s / 3600.0f;
@@ -1130,7 +1247,7 @@ public:
             updateSegmentAndKalman(cycles_since_update);
         }
 
-        handleSyncEvents(V_cell_ocv);
+        handleSyncEvents(V_cell_ocv, T);
 
         data->SoC_fused = fuseSoC();
         data->SoC_fused = constrain(data->SoC_fused, 0.0f, 100.0f);
