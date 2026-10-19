@@ -74,12 +74,12 @@
 #define BATTERY_KALMAN_H
 
 // Version de la librairie (source UNIQUE — agrégée par src/liste_lib.h)
-#define __BATTERYKALMAN_H_VERSION__ "1.8.1"
+#define __BATTERYKALMAN_H_VERSION__ "1.9.0"
 
 #include <Arduino.h>
 #include <math.h>
 #include "BatteryModels.h"
-#include "Coulomb.h"
+#include "CoulombsAh.h"
 
 // ============================================================
 // SURCHARGE COMPILE-TIME (OPTIONNELLE) — v1.6.0
@@ -395,7 +395,7 @@ private:
     SoCData*        data;
     KalmanState2D*  kalman;
     BatteryModel*   model;
-    Coulomb*        coulombMeter;
+    Ah_GD*          ahMeter;   // v1.9.0 : compteur fusionnel CoulombsAh
 
     ChargeState mppt_state = State_UNKNOWN;
     ChargeState mppt_state_prev = State_UNKNOWN;
@@ -442,7 +442,7 @@ private:
 
     struct Segment {
         bool     active = false;
-        float    Ah_start = 0.0f;
+        int64_t  Uc_start = 0;      // v1.9.0 : micro-coulombs EXACTS
         float    SoC_start = 0.0f;
         uint32_t n = 0;
     } seg;
@@ -450,7 +450,7 @@ private:
     float R_int_eff = 0.0f;
     bool  state_dirty = false;
     bool  cycle_initialized = false;
-    float last_Ah = 0.0f;
+    int64_t last_Uc = 0;   // v1.9.0 : µC exacts (le float32 perdait les petits deltas)
 
     // Buffers de diagnostic (getters getPhaseInfo/getLastSyncInfo/getLastLearnInfo).
     // Surchargeables par -D pour les cibles à RAM serrée : le projet Coulometre
@@ -957,8 +957,11 @@ private:
         data->SoC_coulomb = new_SoC;
         data->SoC_fused = new_SoC;
         data->last_sync_time = millis();
-        coulombMeter->reset(false);
-        last_Ah = coulombMeter->getAmpereHours();
+        // v1.9.0 : plus de reset du compteur. Le compteur est un odomètre
+        // monotone ; c'est `last_Uc` qui sert de référence pour le delta.
+        // (Avant, `reset()` était nécessaire uniquement pour éviter la perte de
+        // précision d'un float32 qui grandit — problème résolu par l'int64.)
+        last_Uc = ahMeter ? ahMeter->getNetMicroCoulombs() : 0;
 
         snprintf(last_sync_info, sizeof(last_sync_info),
                  "%s conf=%.0f%%", reason, confidence * 100.0f);
@@ -1056,7 +1059,7 @@ private:
 
     void startNewSegment(float SoC_start) {
         seg.active = true;
-        seg.Ah_start = coulombMeter->getAmpereHours();
+        seg.Uc_start = ahMeter ? ahMeter->getNetMicroCoulombs() : 0;
         seg.SoC_start = SoC_start;
         seg.n = 0;
     }
@@ -1096,9 +1099,13 @@ private:
         // (OCV peu fiable) sauf si overridé via setSegmentThresholds()
         if (!getTuning().ocv_segment_allowed) return;
 
-        float dAh = fabsf(coulombMeter->getAmpereHours() - seg.Ah_start);
+        // v1.9.0 : différence en µC ENTIERS puis conversion unique.
+        // Soustraire deux `getAhNet()` en float32 aurait perdu le delta à
+        // 910 Ah (ULP 6,1e-05 Ah vs incrément 2,78e-06 Ah).
+        int64_t now_uc = ahMeter ? ahMeter->getNetMicroCoulombs() : 0;
+        float dAh = fabsf((float)(now_uc - seg.Uc_start) / 3.6e9f);
         float dSoC = fabsf(SoC_end - seg.SoC_start);
-        float signed_ah = coulombMeter->getAmpereHours() - seg.Ah_start;
+        float signed_ah = (float)(now_uc - seg.Uc_start) / 3.6e9f;
 
         // P1: un pseudo-repos n'est une ancre BASSE valable qu'en DÉCHARGE NETTE
         // (creux après la nuit). Un pseudo-repos pendant la CHARGE (tension haute,
@@ -1160,8 +1167,8 @@ public:
     // ============================================================
     // CONSTRUCTEUR
     // ============================================================
-    BatteryKalman(SoCData* soc, KalmanState2D* kstate, BatteryModel* battModel, Coulomb* coulomb)
-        : data(soc), kalman(kstate), model(battModel), coulombMeter(coulomb) {}
+    BatteryKalman(SoCData* soc, KalmanState2D* kstate, BatteryModel* battModel, Ah_GD* ah)
+        : data(soc), kalman(kstate), model(battModel), ahMeter(ah) {}
 
     // ============================================================
     // INITIALISATION
@@ -1174,15 +1181,16 @@ public:
             data->SoC_fused = data->SoC_voltage;
             data->coulomb_initialized = true;
             data->last_sync_time = millis();
-            coulombMeter->begin(0, false);
+            // v1.9.0 : le compteur est fourni par l'appelant, déjà initialisé.
+            last_Uc = ahMeter ? ahMeter->getNetMicroCoulombs() : 0;
         }
 
-        // K8 CORRECTION: synchroniser TOUJOURS last_Ah sur le compteur courant,
-        // y compris en restauration (coulomb_initialized == true). Sinon, si le
-        // compteur coulomb est restauré à une valeur non nulle (persistance),
-        // last_Ah reste à son défaut (0) et le 1er update() injecte tout le
-        // compteur comme incrément (dAh = getAmpereHours() - 0) → saut de SoC.
-        last_Ah = coulombMeter->getAmpereHours();
+        // K8 CORRECTION (toujours valable en v1.9.0) : synchroniser TOUJOURS
+        // `last_Uc` sur le compteur courant, y compris en restauration. Sinon,
+        // si le compteur est restauré à une valeur non nulle (persistance),
+        // last_Uc resterait à 0 et le 1er update() injecterait tout le compteur
+        // comme incrément (dUc = net − 0) → saut de SoC.
+        last_Uc = ahMeter ? ahMeter->getNetMicroCoulombs() : 0;
 
         updatePhaseFromConfidence();
         state_entry_ms = millis();
@@ -1195,10 +1203,18 @@ public:
     // ============================================================
     // MISE À JOUR PRINCIPALE
     // ============================================================
-    void update(float V, float I, float T) {
+    /**
+     * @param dt_s Pas de temps RÉEL écoulé depuis l'appel précédent (s).
+     *             v1.9.0 : il est FOURNI par l'appelant au lieu d'être lu sur le
+     *             compteur. `Coulomb::getLastInterval()` n'était renseigné que
+     *             par `addMeasurement()` ; un appelant utilisant
+     *             `addMeasurementWithInterval()` laissait 0,001 s → toutes les
+     *             constantes de temps du modèle étaient 100× trop grandes
+     *             (τ_pol 12 s → 1200 s, τ2 300 s → 8,3 h, τ_hyst 2000 s → 55 h).
+     */
+    void update(float V, float I, float T, float dt_s = 0.1f) {
         temp_c_last = T;
-        float dt_s = coulombMeter->getLastInterval();
-        if (dt_s <= 0) dt_s = 0.1f;
+        if (!isfinite(dt_s) || dt_s <= 0.0f) dt_s = 0.1f;
         float dt_h = dt_s / 3600.0f;
 
         updateDerivatives(V, I, dt_s);
@@ -1216,9 +1232,10 @@ public:
         updateMpptState(V, I);
         updatePseudoRest(V, I);   // P1: ancre OCV basse (repos court), opt-in
 
-        float current_Ah = coulombMeter->getAmpereHours();
-        float dAh = current_Ah - last_Ah;
-        last_Ah = current_Ah;
+        // v1.9.0 : delta en µC ENTIERS puis conversion unique (exact).
+        int64_t now_uc = ahMeter ? ahMeter->getNetMicroCoulombs() : last_Uc;
+        float dAh = (float)(now_uc - last_Uc) / 3.6e9f;
+        last_Uc = now_uc;
 
         // v1.7.3 (F8) : les compteurs Ah publiés doivent se réconcilier avec le
         // SoC. Avant, `Ah_total_discharged` intégrait I brut et
@@ -1310,8 +1327,7 @@ public:
         if (new_SoC < 0.0f) new_SoC = data->SoC_voltage;
         data->SoC_coulomb = new_SoC;
         data->SoC_fused = new_SoC;
-        coulombMeter->reset(false);
-        last_Ah = coulombMeter->getAmpereHours();
+        last_Uc = ahMeter ? ahMeter->getNetMicroCoulombs() : 0;
         data->last_sync_time = millis();
     }
 
@@ -1355,7 +1371,12 @@ public:
     }
 
     float getAhIntegrated() {
-        return coulombMeter->getAmpereHours();
+        return ahMeter ? ahMeter->getAhNet() : 0.0f;
+    }
+
+    /** @return Total NET intégré en micro-coulombs (int64, EXACT) — v1.9.0 */
+    int64_t getMicroCoulombsIntegrated() {
+        return ahMeter ? ahMeter->getNetMicroCoulombs() : 0;
     }
 
     /**
@@ -1364,7 +1385,7 @@ public:
      * loi depuis `BatteryModel` (qui diverge : η constant côté compteur vs
      * η(I) de Peukert côté modèle).
      */
-    Coulomb* getCoulombMeter() { return coulombMeter; }
+    Ah_GD* getCoulombMeter() { return ahMeter; }   // v1.9.0 : compteur fusionnel
 
     float getCyclesPartial() { return data->cycles_partial; }
     uint32_t getCyclesFull() { return data->cycles_full; }

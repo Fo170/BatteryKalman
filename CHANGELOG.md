@@ -1,5 +1,64 @@
 # Changelog - BatteryKalman
 
+## [1.9.0] - 2026-10-19
+
+### 💥 BREAKING — compteur `Ah_GD` et pas de temps explicite
+
+Adaptation à **CoulombsAh 3.0.0**, où `Coulomb.h` et `AmpereHeure.h` sont
+remplacés par un compteur unique et fusionnel `Ah_GD` (`CoulombsAh.h`).
+
+### Changements d'API
+
+| Avant (1.8.x) | Après (1.9.0) |
+|---|---|
+| `BatteryKalman(SoCData*, KalmanState2D*, BatteryModel*, Coulomb*)` | `BatteryKalman(..., Ah_GD*)` |
+| `update(V, I, T)` | `update(V, I, T, dt_s)` — le `dt` est **fourni** |
+| `getCoulombMeter()` → `Coulomb*` | `getCoulombMeter()` → `Ah_GD*` |
+| `getAhIntegrated()` | idem, + **`getMicroCoulombsIntegrated()`** (int64 exact) |
+
+### 🐛 Fixed — le delta d'Ah était arrondi à zéro à grande magnitude
+
+`dAh` se calculait par `getAmpereHours() − last_Ah`, deux `float32`. À **910 Ah**
+l'ULP vaut **6,1e-05 Ah**, alors qu'un échantillon de 0,1 s à 0,5 A pèse
+**1,39e-05 Ah** : les incréments étaient arrondis à zéro et le SoC coulomb se
+figeait.
+
+Vérifié : 3600 pas de 0,1 s à −0,5 A depuis 910 Ah (exact : −0,05 Ah) —
+
+| Méthode | Résultat | Erreur |
+|---|---|---|
+| cumul `float32` | 910,000000 Ah | **+0,049988 Ah perdus** |
+| delta `int64` µC | 909,950012 Ah | **−0,0005 pt de SoC** |
+
+**Correctif** : `last_Uc` et `seg.Uc_start` sont des `int64_t` en micro-coulombs.
+Le delta se calcule en entiers, puis est divisé **une seule fois** par 3,6e9.
+
+### 🐛 Fixed — plus besoin de `reset()` du compteur
+
+`doSync()` appelait `coulombMeter->reset(false)`. Ce reset n'existait que pour
+éviter la perte de précision d'un `float32` qui grandit ; il était **redondant**
+avec `last_Ah` (le delta est identique avec ou sans, démontré). Avec un
+compteur `int64` monotone, il devient inutile : `doSync()` se contente de
+resynchroniser `last_Uc`.
+
+### 🐛 Fixed — pas de temps du modèle
+
+`dt_s` était lu sur `coulombMeter->getLastInterval()`. Cette valeur n'était
+renseignée que par `addMeasurement()` ; un appelant utilisant
+`addMeasurementWithInterval()` (ou, depuis CoulombsAh 3.0.0, un compteur sans
+horloge) laissait **0,001 s** → toutes les constantes de temps du modèle étaient
+**100× trop grandes** :
+
+| Constante | Voulue | Effective (bug) |
+|---|---|---|
+| τ_pol | 12 s | **1200 s** |
+| τ2 (diffusion) | 300 s | **8,3 h** |
+| τ_hyst | 2000 s | **55 h** |
+
+La polarisation et l'hystérésis ne s'établissaient jamais (`V_pol_state ≈ 0`)
+→ OCV biaisé. Le `dt` est désormais un **paramètre explicite** de `update()` :
+la dépendance à une horloge interne disparaît.
+
 ## [1.8.1] - 2026-10-19
 
 ### 🐛 Fixed — réarmement de `state_entry_ms` et réalignement REST
