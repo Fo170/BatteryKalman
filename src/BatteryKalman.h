@@ -1393,6 +1393,9 @@ public:
     float getR_estimated() { return kalman->R_estimated; }
     float getR_measured() { return kalman->R_measured; }
     float getAlphaFused() { return alpha_fused; }
+    // v1.8.1 : instant d'entrée dans l'état courant (ms) — permet de vérifier
+    // de l'extérieur que la rampe de fusion REST s'active réellement (#49).
+    uint32_t getStateEntryMs() const { return state_entry_ms; }
 
     const char* getPhaseInfo() { return phase_info; }
     const char* getLastSyncInfo() { return last_sync_info; }
