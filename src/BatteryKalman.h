@@ -66,20 +66,59 @@
  * 100 % passif (ne requiert aucun contrôle de la charge/décharge).
  *
  * Licence: GNU General Public License v3
- * Version: 1.7.0
- * Date: Septembre 2026
+ * Version: 2.0.0
+ * Date: Octobre 2026
+ *
+ * v2.0.0 — QUALITÉ DES SEGMENTS (rupture de la circularité de `C_hat`)
+ * ---------------------------------------------------------------
+ * PROBLÈME. La fermeture d'un segment sur transition FLOAT posait
+ * `SoC_end = 100.0f` — une HYPOTHÈSE, pas une mesure. `detectChargeState()`
+ * déclare FLOAT à `I < max(0,6 ; C·0,02)` près de `V_float_per_cell` : la
+ * batterie peut n'être qu'à 95 %. Cette hypothèse entrait dans `C_measured`,
+ * donc dans `C_hat`, donc dans `SoC_coulomb`, donc dans la fermeture suivante.
+ * Boucle fermée sur sa propre erreur. Mesure du 19/10/2026 : `C_hat` = 26,07 Ah
+ * là où le cycle réel implique ≈ 37,5 Ah (erreur 17,3 points de SoC).
+ *
+ * CORRECTIF. Un segment porte désormais la NATURE de ses deux ancres, et cette
+ * nature détermine l'incertitude de la mesure :
+ *
+ *     u_ancre [points de SoC] :  REST_LONG 1,0 | pseudo-repos 2,0 | FLOAT 5,0
+ *     σ_C     = C_ref · u_ancre / dSoC          [Ah]   (propagation standard)
+ *     R_ancre = σ_C²                            [Ah²]
+ *     R       = max(R_measured, R_ancre)
+ *
+ * Une seule loi, trois constantes, plus aucune valeur magique par cas
+ * particulier (l'ancien `PSEUDO_REST_R_FACTOR = 4` disparaît).
+ *
+ * Un segment dont le score de qualité (loi identique, cf. `SegmentValidator`
+ * côté projet) tombe sous le seuil est REJETÉ avant d'atteindre l'EKF. Un
+ * segment qui contredit la capacité indépendante de plus de 40 % est rejeté
+ * s'il est ancré sur une hypothèse, mais ACCEPTÉ s'il est ancré sur une mesure
+ * — dans ce cas c'est le modèle d'usure qui est suspect, et le drapeau
+ * `wearSuspect` le signale.
+ *
+ * L'initialisation sur une ancre hypothétique reste AUTORISÉE (sinon `C_hat`
+ * resterait à 0 et le bug §M de la doc projet — FLOAT détecté à 2 A près,
+ * SoC forcé à 100 % — se réactiverait), mais avec `P = R_ancre` : le premier
+ * segment ancré sur une mesure reçoit alors un gain quasi unitaire et corrige
+ * en une seule fois.
+ *
+ * RAM : +12 octets sur `Segment` (3 floats), +24 octets d'état.
+ * API : additive uniquement (`setCapacityPrior`, `setSegmentGuard`,
+ * `getLastSegmentQuality`, `getSegmentRejected`, `getLastAnchorKind`).
  */
 
 #ifndef BATTERY_KALMAN_H
 #define BATTERY_KALMAN_H
 
 // Version de la librairie (source UNIQUE — agrégée par src/liste_lib.h)
-#define __BATTERYKALMAN_H_VERSION__ "1.9.0"
+#define __BATTERYKALMAN_H_VERSION__ "2.4.0"
 
 #include <Arduino.h>
 #include <math.h>
 #include "BatteryModels.h"
 #include "CoulombsAh.h"
+#include "SegmentValidator.h"
 
 // ============================================================
 // SURCHARGE COMPILE-TIME (OPTIONNELLE) — v1.6.0
@@ -249,12 +288,11 @@
 // C_hat biaisé. 30 s est un plancher conservateur.
 #define PSEUDO_REST_MIN_MS      30000UL
 #endif
-#ifndef PSEUDO_REST_R_FACTOR
-#define PSEUDO_REST_R_FACTOR    4.0f        // P1: R plancher multiplié (borne basse)
-#endif
-#ifndef PSEUDO_REST_SOC_SIGMA
-#define PSEUDO_REST_SOC_SIGMA   2.0f        // P1: incertitude de SoC de l'ancre OCV (%, absolu)
-#endif
+// ⚠️ v2.0.0 : `PSEUDO_REST_R_FACTOR` et `PSEUDO_REST_SOC_SIGMA` ont été RETIRÉS.
+// L'incertitude d'ancre est désormais portée par `ANCHOR_SOC_SIGMA_*` (ci-dessous)
+// et s'applique à TOUTES les natures d'ancre, plus seulement au pseudo-repos.
+// Un code appelant encore ces macros ne compilerait plus — c'est voulu : il
+// utilisait une valeur arbitraire (×4) au lieu d'une propagation d'incertitude.
 #ifndef PSEUDO_REST_TAU_MIN
 #define PSEUDO_REST_TAU_MIN     0.0f        // P1: constante de temps de relaxation (min) pour extrapoler l'OCV (0 = pas d'extrapolation, conservateur)
 #endif
@@ -264,6 +302,86 @@
 #ifndef PSEUDO_REST_MIN_AH
 #define PSEUDO_REST_MIN_AH      2.0f        // P1: Ah de décharge minimum pour valider une ancre pseudo-repos (~1/3 de la décharge nocturne)
 #endif
+
+// ============================================================
+// v2.0.0 — NATURE ET INCERTITUDE DES ANCRES DE SoC
+// ============================================================
+// Un segment relie DEUX ancres de SoC. Son résultat
+//
+//     C_measured = dAh / (dSoC / 100)          [Ah]
+//
+// n'est exact que si les deux ancres le sont. Or elles ne le sont pas :
+//
+//   REST_LONG      SoC_end = data->SoC_voltage   → MESURÉ (OCV relaxée)
+//   pseudo-repos   SoC_end = ocvToSoc(V_relax)   → MESURÉ, moins précis
+//   FLOAT          SoC_end = 100.0f              → HYPOTHÈSE
+//
+// `detectChargeState()` déclare FLOAT à `I < max(0,6 ; C·0,02)` près de
+// `V_float_per_cell` : le courant peut encore valoir 0,5 A, la polarisation
+// n'est pas relaxée, et la batterie n'est pas nécessairement pleine. L'écart
+// réel entre 100 % et le SoC vrai est BORNÉ PAR LE BAS de la fenêtre de
+// détection, pas par une mesure.
+//
+// Incertitude retenue, en POINTS de SoC (pas en % relatif) :
+//   1,0 pt   REST_LONG     : OCV relaxée, table OCV à ±1 pt près
+//   2,0 pt   pseudo-repos  : relaxation incomplète (PSEUDO_REST_MIN_MS = 30 s
+//                            contre τ_pol de plusieurs minutes)
+//   5,0 pt   FLOAT         : hypothèse « batterie pleine » sur une fenêtre de
+//                            courant de 2 % de C
+//
+// La loi d'erreur est ensuite la MÊME pour les trois :
+//    σ_C = C_ref · u_ancre / dSoC      [Ah]
+// Une ancre à ±5 pt sur 40 pt de course donne σ_C = 12,5 % de C_ref ; la même
+// ancre sur 5 pt de course donne σ_C = 100 % de C_ref — le segment n'informe
+// plus sur rien, ce que la validation de qualité rejette.
+#ifndef ANCHOR_SOC_SIGMA_REST
+#define ANCHOR_SOC_SIGMA_REST       1.0f
+#endif
+#ifndef ANCHOR_SOC_SIGMA_PSEUDO
+#define ANCHOR_SOC_SIGMA_PSEUDO     2.0f
+#endif
+#ifndef ANCHOR_SOC_SIGMA_FLOAT
+#define ANCHOR_SOC_SIGMA_FLOAT      5.0f
+#endif
+#ifndef ANCHOR_SOC_SIGMA_UNKNOWN
+#define ANCHOR_SOC_SIGMA_UNKNOWN  100.0f   // ancre non identifiée ⇒ inexploitable
+#endif
+
+// Seuil de la garde croisée capacité apprise / capacité indépendante (usure).
+// Au-delà, les deux estimations ne peuvent pas décrire la même batterie.
+#ifndef SEG_CROSS_GUARD_REL
+#define SEG_CROSS_GUARD_REL         0.40f
+#endif
+
+// Score de qualité minimal pour accepter un segment (cf. SegmentValidator).
+// ⚠️ Le calcul des facteurs vit dans `src/SegmentValidator.h` du PROJET : la
+//    librairie ne dépend pas du projet, elle ne reçoit que le score.
+#ifndef SEG_QUALITY_MIN
+#define SEG_QUALITY_MIN             0.50f
+#endif
+
+/**
+ * @enum AnchorKind
+ * @brief Nature de l'ancre de SoC qui ferme (ou ouvre) un segment.
+ *
+ * `ANCHOR_NONE` = aucune ancre identifiée : le segment ne peut pas être fermé.
+ */
+enum AnchorKind : uint8_t {
+    ANCHOR_NONE            = 0,
+    ANCHOR_OCV_MESURE      = 1,   // REST_LONG : SoC_end = SoC_voltage
+    ANCHOR_PSEUDO_REST     = 2,   // fin de pseudo-repos : ocvToSoc(V_relax)
+    ANCHOR_FLOAT_HYPOTHESE = 3    // transition FLOAT : SoC_end = 100 % (hypothèse)
+};
+
+/** @brief Nom lisible d'une nature d'ancre (UI / logs). */
+inline const char* anchorKindStr(uint8_t k) {
+    switch (k) {
+        case ANCHOR_OCV_MESURE:      return "OCV";
+        case ANCHOR_PSEUDO_REST:     return "pseudo";
+        case ANCHOR_FLOAT_HYPOTHESE: return "FLOAT";
+        default:                     return "-";
+    }
+}
 
 // ============================================================
 // P2 — RÉGRESSION ACCUMULÉE (observateur passif)
@@ -417,6 +535,7 @@ private:
     float     V_prev = 0.0f;
     float     I_prev = 0.0f;
     float     V_prev_sample = 0.0f;     // R6: V de l'échantillon précédent (bruit de mesure)
+    float     I_prev_sample = 0.0f;     // v2.0.0: I de l'échantillon précédent (bruit de mesure)
 
     // P1: mode pseudo-repos (ancre OCV courte, opt-in)
     bool      pseudo_rest_enabled = false;
@@ -442,10 +561,89 @@ private:
 
     struct Segment {
         bool     active = false;
+        uint8_t  anchor_start = ANCHOR_NONE;   // v2.0.0 : nature de l'ancre d'ouverture
+        uint8_t  anchor_end   = ANCHOR_NONE;   // v2.0.0 : nature de l'ancre de fermeture
         int64_t  Uc_start = 0;      // v1.9.0 : micro-coulombs EXACTS
         float    SoC_start = 0.0f;
         uint32_t n = 0;
+        // v2.0.0 : observables de qualité, accumulées sur la durée du segment.
+        // `dV_ema`/`dI_ema` sont des moyennes exponentielles de |ΔV| et |ΔI|
+        // entre deux échantillons consécutifs — c'est le bruit du capteur, pas
+        // l'amplitude du signal (qui parcourt 1 V sur une charge complète et
+        // n'a donc aucun sens comme critère de propreté).
+        float    dV_ema = 0.0f;     // V
+        float    dI_ema = 0.0f;     // A
+        float    T_start = 0.0f;    // °C — pour la dérive thermique
+        float    T_last = 0.0f;     // °C
     } seg;
+
+    // v2.0.0 — état de qualité / garde croisée
+    SegmentQuality _segQ;                            // dernier score détaillé
+    uint8_t  _segReason       = 0;                  // SegReason (0 = OK)
+    uint8_t  _lastAnchor      = ANCHOR_NONE;        // ancre de la dernière fermeture
+    uint16_t _segRejected     = 0;                  // segments rejetés (cumul)
+    uint16_t _segAccepted     = 0;                  // segments acceptés (cumul)
+    bool     _initFromHypothesis = false;           // C_hat initialisé sur une hypothèse
+    bool     _wearSuspect     = false;              // une ancre mesurée contredit l'usure
+    float    _capacityPrior   = 0.0f;               // Ah — capacité indépendante (usure)
+    float    _crossGuardRel   = SEG_CROSS_GUARD_REL;
+    float    _lastDSoC        = 0.0f;               // % — dSoC du dernier segment fermé
+    SegmentValidator::Limits _segLimits;            // seuils de qualité
+
+    // ── v2.1.0 (F-03) — PEUKERT SUR LA CONVERSION Ah→SoC ────────────────
+    // La capacité qui convertit les Ah en SoC n'était PAS dépendante du courant :
+    // `SoC_coulomb += (dAh / C_hat) × 100` avec `C_hat` constant. Or la capacité
+    // RÉELLEMENT restituable dépend du régime (loi de Peukert) : à 0,56 A de
+    // décharge nocturne, une batterie dont `C_hat` = 26,07 Ah restitue
+    // 26,07·(1,3/0,56)^0,4 = 36,5 Ah. Le SoC descendait donc 40 % trop vite
+    // chaque nuit, puis l'ancre FLOAT le remettait à 100 % : c'est exactement
+    // la signature « +29 Ah entrés, SoC qui baisse » relevée sur 8 jours.
+    //
+    // ⚠️ Ce n'est PAS un rendement. `η` (CoulombFct) pondère le COURANT avant
+    // intégration — il reste la seule chose qui touche au comptage. Peukert ne
+    // modifie QUE le diviseur de la conversion Ah→SoC. Les deux notions sont
+    // distinctes : les confondre reproduirait le défaut corrigé en v5.24.
+    bool     _peukertOn       = false;              // activé par le projet (plomb)
+    float    _peukertN        = 1.0f;               // exposant (> 1 = actif)
+    float    _peukertIref     = 1.3f;               // A — courant de référence
+    float    _peukertTau      = 300.0f;             // s — lissage du courant
+    // v5.41 (4ᵉ passe) — RÉGIME DE DÉCHARGE + RATIO PUBLIÉ LISSÉ.
+    // Le modèle est volontairement SIMPLE, parce que trois versions successives
+    // ont montré que chaque mécanisme ajouté créait un nouveau transitoire :
+    //   • un seul état de régime : `_peukertIema` = |I| lissé **pendant la
+    //     décharge uniquement**, RÉ-AMORCÉ sur le front montant (première
+    //     décharge après une pause). Sans ce ré-amorçage, une décharge de 5 A
+    //     suivie d'un repos puis d'une décharge de 0,5 A laissait le régime à
+    //     5 A : le ratio valait 0,69 au lieu de 1,47 pendant 24 min (−53 % sur
+    //     « Ah disponibles »).
+    //   • `_peukertCRatio` = EMA de la cible → la grandeur PUBLIÉE. Elle est
+    //     continue par construction, donc `Ah`, `aut_h`, `peuk_ratio` et
+    //     `c_soc` ne sautent jamais.
+    // ⚠️ La CONTINUITÉ ne dispense pas de l'EXACTITUDE : le régime doit être
+    // ré-amorcé, sinon la valeur est fausse (mais lisse) pendant des minutes.
+    float    _peukertIema      = 0.0f;   // A — |I| lissé pendant la décharge
+    bool     _peukertIemaInit  = false;  // régime jamais amorcé
+    bool     _peukertWasDis   = false;   // ÉTAT « en décharge » (hystérésis, cf. N21)
+    bool     _peukertRatioInit = false;  // ratio jamais amorcé
+    float    _peukertCRatio    = 1.0f;   // publié : C_soc / C_hat
+
+    // Seuils du régime (A) — réglables par `setSoCPeukertThresholds()`.
+    //   • `_peukertIActive` : en dessous, il n'y a pas de régime de décharge
+    //     identifiable. À 0,12 A une décharge dure 10 jours et la loi de Peukert
+    //     n'est plus mesurable ; la formule saturait de toute façon (×2 dès
+    //     0,23 A). ⚠️ Coût assumé : une veille permanente à 0,12 A perd sa
+    //     correction, soit ~5,5 pt de SoC par 24 h (mesuré).
+    //   • `_peukertINoise` : seuil au-dessus duquel on considère qu'on n'est
+    //     PLUS en décharge (courant positif = charge, ou bruit au repos).
+    //     Il n'est donc PAS redondant avec `_peukertIActive` : c'est la borne de
+    //     SORTIE de l'hystérésis (cf. N21).
+    float    _peukertIActive = 0.15f;
+    float    _peukertINoise  = 0.02f;
+
+    // Constante de temps du lissage du RATIO PUBLIÉ (s). Plus courte que
+    // `_peukertTau` (300 s, le régime) : le ratio doit suivre en quelques
+    // minutes, sans sauter.
+    static constexpr float PEUKERT_RATIO_TAU_S = 60.0f;
 
     float R_int_eff = 0.0f;
     bool  state_dirty = false;
@@ -898,7 +1096,7 @@ private:
 
         // F1: ces transitions sont maintenant réellement détectées
         if (mppt_state == State_FLOAT && mppt_state_prev != State_FLOAT) {
-            doSync(100.0f, t.conf_float, "Float charge");
+            doSync(100.0f, t.conf_float, "Float charge", ANCHOR_FLOAT_HYPOTHESE);
             return;
         }
 
@@ -907,7 +1105,7 @@ private:
             uint32_t elapsed = millis() - state_entry_ms;
             uint32_t extra = (elapsed > rest_min_ms) ? (elapsed - rest_min_ms) : 0UL;
             float conf = t.conf_rest_base + t.conf_rest_span * min(1.0f, extra / (float)rest_min_ms);
-            doSync(data->SoC_voltage, conf, "Long rest OCV");
+            doSync(data->SoC_voltage, conf, "Long rest OCV", ANCHOR_OCV_MESURE);
             return;
         }
 
@@ -930,7 +1128,7 @@ private:
         // (last_sync_time est mis à jour par doSync()).
         if ((mppt_state == State_REST || mppt_state == State_REST_LONG) && total_ocv < min_voltage
             && millis() - data->last_sync_time > REST_ALIGN_SYNC_MS) {
-            doSync(3.0f, 0.75f, "Low voltage cutoff");
+            doSync(3.0f, 0.75f, "Low voltage cutoff", ANCHOR_OCV_MESURE);
             return;
         }
 
@@ -953,7 +1151,16 @@ private:
         (void)0;
     }
 
-    void doSync(float new_SoC, float confidence, const char* reason) {
+    /**
+     * @param anchor v2.0.0 : nature de l'ancre posée par cette synchro. Elle
+     *               détermine l'incertitude du segment qui DÉMARRE ici (le SoC
+     *               de départ) et celle du segment qui se fermera dessus.
+     *               Par défaut ANCHOR_NONE = « origine inconnue » (synchro
+     *               manuelle) : le segment hérite alors de l'incertitude
+     *               maximale, donc d'un poids quasi nul.
+     */
+    void doSync(float new_SoC, float confidence, const char* reason,
+                uint8_t anchor = ANCHOR_NONE) {
         data->SoC_coulomb = new_SoC;
         data->SoC_fused = new_SoC;
         data->last_sync_time = millis();
@@ -965,7 +1172,7 @@ private:
 
         snprintf(last_sync_info, sizeof(last_sync_info),
                  "%s conf=%.0f%%", reason, confidence * 100.0f);
-        startNewSegment(new_SoC);
+        startNewSegment(new_SoC, anchor);
         state_dirty = true;
     }
 
@@ -1057,47 +1264,210 @@ private:
         return base;
     }
 
-    void startNewSegment(float SoC_start) {
-        seg.active = true;
-        seg.Uc_start = ahMeter ? ahMeter->getNetMicroCoulombs() : 0;
-        seg.SoC_start = SoC_start;
-        seg.n = 0;
+    // ------------------------------------------------------------
+    // v2.0.0 — LOIS PURES DE QUALITÉ (testables sans machine à états)
+    // ------------------------------------------------------------
+public:
+    /**
+     * @brief Incertitude d'une ancre de SoC, en POINTS de SoC.
+     *
+     * Une ancre non identifiée reçoit 100 points : sur une batterie réelle,
+     * 100 points d'incertitude signifient « aucun SoC connu », donc un segment
+     * inexploitable. C'est volontairement rédhibitoire plutôt que silencieux.
+     */
+    static float anchorSoCUncertainty(uint8_t kind) {
+        switch (kind) {
+            case ANCHOR_OCV_MESURE:      return ANCHOR_SOC_SIGMA_REST;
+            case ANCHOR_PSEUDO_REST:     return ANCHOR_SOC_SIGMA_PSEUDO;
+            case ANCHOR_FLOAT_HYPOTHESE: return ANCHOR_SOC_SIGMA_FLOAT;
+            default:                     return ANCHOR_SOC_SIGMA_UNKNOWN;
+        }
     }
 
-    void updateSegmentAndKalman(float delta_cycles) {
+    /**
+     * @brief Écart-type de la capacité déduite d'un segment, en Ah.
+     *
+     *     C_measured = dAh / (dSoC/100)
+     *     σ_C = C_measured · (u_ancre / dSoC)      [Ah]
+     *
+     * Démonstration : u_ancre est une erreur absolue sur le SoC en points, donc
+     * l'erreur relative sur dSoC vaut u/dSoC, et C_measured est inversement
+     * proportionnel à dSoC — d'où la même erreur relative sur C.
+     *
+     * ⚠️ On scale sur `C_ref` (capacité de RÉFÉRENCE), pas sur `C_measured` :
+     *    une mesure aberrante gonflerait sa propre barre d'erreur et se
+     *    protégerait du rejet. `C_ref` vient de l'extérieur du segment.
+     *
+     * @param cRefAh   Capacité de référence (Ah), > 0
+     * @param dsocPct  Course de SoC du segment (points), > 0
+     * @param kind     Nature de l'ancre de fermeture
+     * @return σ_C en Ah ; +Inf si les entrées interdisent le calcul
+     */
+    static float anchorCapacitySigma(float cRefAh, float dsocPct, uint8_t kind) {
+        if (!isfinite(cRefAh) || !isfinite(dsocPct)) return INFINITY;
+        if (cRefAh <= 0.0f || dsocPct <= 0.0f) return INFINITY;
+        return cRefAh * (anchorSoCUncertainty(kind) / dsocPct);
+    }
+
+    /**
+     * @brief Variance de mesure `R` apportée par l'ancre, en Ah².
+     * @see anchorCapacitySigma
+     */
+    static float anchorCapacityVariance(float cRefAh, float dsocPct, uint8_t kind) {
+        float s = anchorCapacitySigma(cRefAh, dsocPct, kind);
+        if (!isfinite(s)) return INFINITY;
+        return s * s;
+    }
+
+    /** @brief Issues de la garde croisée capacité apprise / capacité indépendante. */
+    enum GuardResult : uint8_t {
+        GUARD_OK              = 0,  // les deux estimations sont compatibles
+        GUARD_REJECT          = 1,  // segment ancré sur hypothèse : rejeté
+        GUARD_WEAR_SUSPECT    = 2   // segment ancré sur MESURE : l'usure est suspecte
+    };
+
+
+    /**
+     * @brief Garde croisée : le segment contredit-il la capacité indépendante ?
+     *
+     *     gap = |C_measured − C_prior| / C_prior
+     *
+     * RÈGLE ASYMÉTRIQUE — et pourquoi elle doit l'être :
+     *   • ancre HYPOTHÈSE (FLOAT) → le segment n'a pas d'autorité : rejet.
+     *     Sans cela, `C_hat` resterait tiré par une supposition à 100 %.
+     *   • ancre MESURÉE (OCV) → le segment a l'autorité : on l'accepte et on
+     *     marque le MODÈLE D'USURE comme suspect. Un rejet inconditionnel
+     *     figerait `C_hat` sur une valeur fausse pour toujours — c'est
+     *     exactement le piège à éviter (`capacity_current` est initialisée à
+     *     72 Ah × (1 − 50 %) sans aucune mesure).
+     *
+     * @param cMeasAh   Capacité déduite du segment (Ah)
+     * @param cPriorAh  Capacité indépendante (Ah) ; <= 0 ⇒ garde inactive
+     * @param tolRel    Tolérance relative (0,40 = 40 %)
+     * @param kind      Nature de l'ancre de fermeture
+     */
+    static uint8_t crossGuard(float cMeasAh, float cPriorAh, float tolRel,
+                              uint8_t kind) {
+        if (!isfinite(cMeasAh) || !isfinite(cPriorAh)) return GUARD_REJECT;
+        if (!(cPriorAh > 0.0f)) return GUARD_OK;          // pas de référence
+        if (!(tolRel > 0.0f)) return GUARD_OK;            // garde désactivée
+        float gap = fabsf(cMeasAh - cPriorAh) / cPriorAh;
+        if (gap <= tolRel) return GUARD_OK;
+        return (kind == ANCHOR_FLOAT_HYPOTHESE) ? GUARD_REJECT : GUARD_WEAR_SUSPECT;
+    }
+
+    // ------------------------------------------------------------
+    // Segments (privés)
+    // ------------------------------------------------------------
+private:
+    /**
+     * @brief Ouvre un nouveau segment à partir du SoC courant.
+     * @param SoC_start    SoC de l'ancre d'ouverture (%)
+     * @param anchor_start Nature de cette ancre (v2.0.0)
+     */
+    void startNewSegment(float SoC_start, uint8_t anchor_start = ANCHOR_NONE) {
+        seg.active       = true;
+        seg.anchor_start = anchor_start;
+        seg.anchor_end   = ANCHOR_NONE;
+        seg.Uc_start     = ahMeter ? ahMeter->getNetMicroCoulombs() : 0;
+        seg.SoC_start    = SoC_start;
+        seg.n            = 0;
+        seg.dV_ema       = 0.0f;
+        seg.dI_ema       = 0.0f;
+        seg.T_start      = temp_c_last;
+        seg.T_last       = temp_c_last;
+    }
+
+    /**
+     * @brief Ferme un segment rejeté et comptabilise le rejet.
+     * @param SoC_end      SoC de l'ancre de fermeture (nouvelle ouverture)
+     * @param anchor_end   Nature de cette ancre
+     * @param quality      Score de qualité [0;1] (0 si non calculé)
+     * @param reason       Motif (SegReason, 0 = OK)
+     */
+    void rejectSegment(float SoC_end, uint8_t anchor_end, float quality, uint8_t reason,
+                       float dsoc_pct = 0.0f) {
+        if (_segRejected < 0xFFFF) _segRejected++;
+        _segQ.score = quality;
+        _segReason  = reason;
+        _lastAnchor = anchor_end;
+        _lastDSoC   = dsoc_pct;
+        startNewSegment(SoC_end, anchor_end);
+    }
+
+    void updateSegmentAndKalman(float delta_cycles, float V = 0.0f, float I = 0.0f) {
         if (!seg.active) {
-            if (mppt_state == State_FLOAT || mppt_state == State_REST_LONG) {
-                startNewSegment(data->SoC_fused);
+            if (mppt_state == State_FLOAT) {
+                startNewSegment(data->SoC_fused, ANCHOR_FLOAT_HYPOTHESE);
+            } else if (mppt_state == State_REST_LONG) {
+                startNewSegment(data->SoC_fused, ANCHOR_OCV_MESURE);
             }
             return;
         }
 
         seg.n++;
 
+        // v2.0.0 : bruit du capteur sur la durée du segment. |ΔV| et |ΔI| entre
+        // deux échantillons consécutifs — c'est le bruit, pas l'amplitude du
+        // signal (la tension parcourt ~1 V sur une charge complète : son écart
+        // crête ne dit rien de sa propreté).
+        //
+        // ⚠️ REJET D'ÉCHELON. Un changement d'état (DISCHARGE → REST → BULK)
+        //    fait sauter le courant de plusieurs ampères en UN échantillon.
+        //    Ce n'est pas du bruit, c'est le procédé. Sans ce garde-fou, la
+        //    moyenne exponentielle absorbait le saut et déclarait le segment
+        //    « courant bruité » à chaque transition — donc rejetait des
+        //    segments parfaitement valides. On n'alimente l'estimateur que si
+        //    l'écart reste dans l'ordre de grandeur du bruit déjà observé.
+        if (V > 0.0f && V_prev_sample > 0.0f) {
+            float dV  = fabsf(V - V_prev_sample);
+            float lim = 4.0f * seg.dV_ema + 0.002f;      // 2 mV de plancher
+            if (seg.n <= 1 || dV <= lim) {
+                seg.dV_ema = (seg.n <= 1) ? dV : (0.95f * seg.dV_ema + 0.05f * dV);
+            }
+        }
+        {
+            float dI  = fabsf(I - I_prev_sample);
+            float lim = 4.0f * seg.dI_ema + 0.010f;      // 10 mA de plancher
+            if (seg.n <= 1 || dI <= lim) {
+                seg.dI_ema = (seg.n <= 1) ? dI : (0.95f * seg.dI_ema + 0.05f * dI);
+            }
+        }
+        seg.T_last = temp_c_last;
+
         float SoC_end = 0.0f;
         bool close = false;
         bool pseudo_close = false;   // P1: fermeture sur fin de pseudo-repos
+        uint8_t anchor_end = ANCHOR_NONE;
 
         // F1: transitions détectées (plus de code mort)
         if (mppt_state == State_FLOAT && mppt_state_prev != State_FLOAT) {
+            // v2.0.0 : HYPOTHÈSE, plus une mesure. La nature est mémorisée pour
+            // que l'incertitude de l'ancre entre dans R (cf. anchorCapacityVariance).
             SoC_end = 100.0f; close = true;
+            anchor_end = ANCHOR_FLOAT_HYPOTHESE;
         } else if (mppt_state == State_REST_LONG && mppt_state_prev != State_REST_LONG) {
             // F5 + F8: fermeture par transition REST_LONG (porte de stabilité)
             SoC_end = data->SoC_voltage;
             close = true;
+            anchor_end = ANCHOR_OCV_MESURE;
         } else if (pseudo_rest_ended) {
             // P1: fin d'un pseudo-repos -> ancre OCV basse (repos court).
             // SoC estimé depuis la tension relaxée (dernier échantillon du repos).
             SoC_end = model->ocvToSoc(pseudo_rest_v, 25.0f);
             close = true;
             pseudo_close = true;
+            anchor_end = ANCHOR_PSEUDO_REST;
         }
 
         if (!close) return;
 
         // v1.6.0: gating OCV — segments désactivés pour NiFe/Sodium
         // (OCV peu fiable) sauf si overridé via setSegmentThresholds()
-        if (!getTuning().ocv_segment_allowed) return;
+        if (!getTuning().ocv_segment_allowed) {
+            startNewSegment(SoC_end, anchor_end);
+            return;
+        }
 
         // v1.9.0 : différence en µC ENTIERS puis conversion unique.
         // Soustraire deux `getAhNet()` en float32 aurait perdu le delta à
@@ -1112,7 +1482,7 @@ private:
         // net positif) doit être IGNORÉ sans casser le segment en cours.
         if (pseudo_close) {
             if (signed_ah >= 0.0f) return;                 // net charge : ignorer, segment conservé
-            if (dAh < pseudo_rest_min_ah) { startNewSegment(SoC_end); return; }
+            if (dAh < pseudo_rest_min_ah) { startNewSegment(SoC_end, anchor_end); return; }
         }
 
         const KalmanTuning& t2 = getTuning();
@@ -1128,16 +1498,50 @@ private:
         }
 
         if (dAh < dAh_threshold || dSoC < min_dSoC || seg.n == 0) {
-            startNewSegment(SoC_end);
+            rejectSegment(SoC_end, anchor_end, 0.0f, SEG_REASON_DSOC, dSoC);
             return;
         }
 
         float C_measured = dAh / (dSoC / 100.0f);
 
-        if (C_measured < 1.0f || C_measured > 2000.0f) {
-            startNewSegment(SoC_end);
+        if (!isfinite(C_measured) || C_measured < 1.0f || C_measured > 2000.0f) {
+            rejectSegment(SoC_end, anchor_end, 0.0f, SEG_REASON_NONFINITE, dSoC);
             return;
         }
+
+        // ---- v2.0.0 : score de qualité (produit de 5 facteurs) ----
+        // Facteurs : résolution de l'ancre, amplitude du segment, bruit de
+        // tension, dérive thermique, bruit de courant. Le produit est un
+        // REJET (un facteur nul annule tout), pas une pondération — la
+        // pondération, c'est `R`, calculé plus bas. Deux rôles distincts,
+        // aucune duplication : `R` dit « peu informatif », le score dit
+        // « inutilisable ».
+        _segQ = SegmentValidator::evaluate(
+            dSoC, anchorSoCUncertainty(anchor_end),
+            seg.dV_ema * 1000.0f,
+            fabsf(seg.T_last - seg.T_start),
+            seg.dI_ema,
+            _segLimits);
+        _segReason = _segQ.reason;
+        if (!_segQ.accepted) {
+            rejectSegment(SoC_end, anchor_end, _segQ.score, _segQ.reason, dSoC);
+            return;
+        }
+
+        // ---- v2.0.0 : garde croisée avec la capacité indépendante ----
+        uint8_t guard = crossGuard(C_measured, _capacityPrior, _crossGuardRel, anchor_end);
+        if (guard == GUARD_REJECT) {
+            // ⚠️ v5.31 (F3) : motif DÉDIÉ. Passer `_segQ.reason` ici envoyait
+            // `SEG_REASON_OK` (le score venait d'être accepté) → un rejet sans
+            // cause affichable.
+            rejectSegment(SoC_end, anchor_end, _segQ.score,
+                          SEG_REASON_CROSS_GUARD, dSoC);
+            return;
+        }
+        // ⚠️ v5.31 (F4) : le drapeau doit pouvoir RETOMBER. Il ne servait à rien
+        // s'il restait levé pour tout l'uptime : il conditionne la confiance
+        // accordée à `C_hat` par rapport au modèle d'usure.
+        _wearSuspect = (guard == GUARD_WEAR_SUSPECT);
 
         // P2: accumuler le point (dSoC, dAh) pour la régression robuste (passif).
         // UNIQUEMENT les segments de DÉCHARGE NETTE : les segments de charge sont
@@ -1145,22 +1549,41 @@ private:
         // FLOAT (Ah accumulés sans variation de SoC).
         if (signed_ah < 0.0f) addRegressionPoint(dSoC, dAh);
 
-        // F3: R adaptatif réellement utilisé
+        // ---- v2.0.0 : R = max(R_adaptatif, R_ancre) ----
+        // UNE loi pour toutes les natures d'ancre (l'ancien traitement spécial
+        // du pseudo-repos — R×4 + formule ad hoc — disparaît). La variance
+        // apportée par l'incertitude de l'ancre est celle de la propagation
+        // standard : σ_C = C_ref·u_ancre/dSoC, R = σ_C².
         float R = kalman->R_measured;
-        // P1: un pseudo-repos (court, relaxation inachevée) est moins fiable
-        // qu'un REST_LONG. L'incertitude dominante est celle du SoC de l'ancre
-        // OCV : sigma_C = C * sigma_SoC / dSoC  ->  R = sigma_C^2 (majorant).
-        if (pseudo_close) {
-            // R dérivé de la mesure elle-même (C_measured) : robuste même au 1er point.
-            float sig_c = C_measured * (PSEUDO_REST_SOC_SIGMA / dSoC);
-            float R_pseudo = sig_c * sig_c;
-            R = max(R * PSEUDO_REST_R_FACTOR, R_pseudo);
+        float R_anchor = anchorCapacityVariance(C_ref, dSoC, anchor_end);
+        if (isfinite(R_anchor) && R_anchor > R) R = R_anchor;
+
+        // v2.0.0 (W3) — INITIALISATION SUR HYPOTHÈSE.
+        // On AUTORISE l'init même sur une ancre hypothétique : la refuser
+        // laisserait `C_hat` à 0, donc `C_effective` à 0, donc l'intégration du
+        // courant SAUTÉE et `detectChargeState()` en repli à 100 Ah — c'est-à-
+        // dire le bug §M de la documentation projet (FLOAT détecté jusqu'à 2 A,
+        // SoC forcé à 100 %). On la marque simplement : `P[0][0]` reçoit la
+        // variance d'ancre, si bien que le PREMIER segment ancré sur une mesure
+        // reçoit un gain quasi unitaire et corrige en une seule fois.
+        if (!kalman->initialized && anchor_end == ANCHOR_FLOAT_HYPOTHESE) {
+            _initFromHypothesis = true;
+        }
+        // ⚠️ v5.31 (F4) : une ancre MESURÉE lève le doute. Sans cette remise à
+        // zéro, `c_from_hyp` restait `true` pour tout l'uptime dès la première
+        // initialisation sur FLOAT, alors que le champ signifie précisément
+        // « C_hat n'a JAMAIS été confronté à une mesure ».
+        if (anchor_end == ANCHOR_OCV_MESURE || anchor_end == ANCHOR_PSEUDO_REST) {
+            _initFromHypothesis = false;
         }
 
         // EKF 2D update
         applyKalmanUpdate2D(C_measured, R, delta_cycles);
         cycles_since_update = 0.0f;   // K7: cycles consommés par la mesure
-        startNewSegment(SoC_end);
+        _lastAnchor = anchor_end;
+        _lastDSoC   = dSoC;
+        if (_segAccepted < 0xFFFF) _segAccepted++;
+        startNewSegment(SoC_end, anchor_end);
     }
 
 public:
@@ -1168,7 +1591,9 @@ public:
     // CONSTRUCTEUR
     // ============================================================
     BatteryKalman(SoCData* soc, KalmanState2D* kstate, BatteryModel* battModel, Ah_GD* ah)
-        : data(soc), kalman(kstate), model(battModel), ahMeter(ah) {}
+        : data(soc), kalman(kstate), model(battModel), ahMeter(ah) {
+        _segLimits = SegmentValidator::defaultLimits();
+    }
 
     // ============================================================
     // INITIALISATION
@@ -1246,7 +1671,13 @@ public:
             data->Ah_total_discharged += -dAh;
         else
             data->Ah_total_charged += dAh;
-        float C_ref = getEffectiveCapacity();
+        // ⚠️ v2.1.0 (F-03) — `getSoCCapacity()` au lieu de `getEffectiveCapacity()` :
+        // la conversion Ah→SoC tient compte du RÉGIME (Peukert). Sans cela, à
+        // 0,56 A de décharge nocturne, le SoC descendait 40 % trop vite et
+        // l'ancre FLOAT le remettait à 100 % chaque matin — c'est le désaccord
+        // « +29 Ah entrés / SoC qui baisse » observé sur 8 jours.
+        // Le compteur de coulombs (dAh) reste BRUT : seule la conversion change.
+        float C_ref = getSoCCapacity(I, dt_s);
         if (C_ref > 0.0f) {
             data->SoC_coulomb += (dAh / C_ref) * 100.0f;
             data->SoC_coulomb = constrain(data->SoC_coulomb, 0.0f, 100.0f);
@@ -1261,7 +1692,7 @@ public:
             float delta_cycles = data->cycles_partial - last_cycles;
             last_cycles = data->cycles_partial;
             cycles_since_update += delta_cycles;
-            updateSegmentAndKalman(cycles_since_update);
+            updateSegmentAndKalman(cycles_since_update, V, I);
         }
 
         handleSyncEvents(V_cell_ocv, T);
@@ -1275,6 +1706,7 @@ public:
         // F1: mppt_state_prev mis à jour en fin de cycle pour la prochaine itération
         mppt_state_prev = mppt_state;
         V_prev_sample = V;   // R6: mémorise V pour l'estimation du bruit de mesure
+        I_prev_sample = I;   // v2.0.0: idem pour le courant
     }
 
     // ============================================================
@@ -1312,15 +1744,15 @@ public:
     // SYNCHRONISATIONS MANUELLES
     // ============================================================
     void syncToVoltage() {
-        doSync(data->SoC_voltage, 0.80f, "Manual sync");
+        doSync(data->SoC_voltage, 0.80f, "Manual sync", ANCHOR_OCV_MESURE);
     }
 
     void syncToFull() {
-        doSync(100.0f, 0.95f, "Manual full");
+        doSync(100.0f, 0.95f, "Manual full", ANCHOR_FLOAT_HYPOTHESE);
     }
 
     void syncToEmpty() {
-        doSync(0.0f, 0.90f, "Manual empty");
+        doSync(0.0f, 0.90f, "Manual empty", ANCHOR_OCV_MESURE);
     }
 
     void resetCoulombCount(float new_SoC = -1.0f) {
@@ -1345,6 +1777,32 @@ public:
         kalman->R_estimated = t.r_init;
         kalman->R_measured = t.r_init;
         phase = PHASE_BOOTSTRAP;
+        // ⚠️ v5.31 (F8) — L'ÉTAT DE SEGMENT DOIT MOURIR AVEC L'APPRENTISSAGE.
+        // Avant, `resetLearning()` remettait `C_hat`/`P`/`phase` à zéro mais
+        // laissait `seg.active`, `seg.SoC_start` et `seg.Uc_start` vivants. Le
+        // segment suivant se fermait alors avec un dSoC et un dAh mesurés
+        // depuis l'ancre PRÉ-RESET, et comme `P[0][0]` venait d'être réinitialisé
+        // à `p_init_C`, le gain était quasi unitaire : un `C_hat` faux était
+        // injecté juste après un reset. Les compteurs exposés restaient ceux
+        // d'avant, rendant le reset invérifiable.
+        seg.active       = false;
+        seg.anchor_start = ANCHOR_NONE;
+        seg.anchor_end   = ANCHOR_NONE;
+        seg.Uc_start     = ahMeter ? ahMeter->getNetMicroCoulombs() : 0;
+        seg.SoC_start    = 0.0f;
+        seg.n            = 0;
+        seg.dV_ema       = 0.0f;
+        seg.dI_ema       = 0.0f;
+        seg.T_start      = temp_c_last;
+        seg.T_last       = temp_c_last;
+        _segQ            = SegmentQuality();
+        _segReason       = SEG_REASON_OK;
+        _segAccepted     = 0;
+        _segRejected     = 0;
+        _lastAnchor      = ANCHOR_NONE;
+        _lastDSoC        = 0.0f;
+        _initFromHypothesis = false;   // v5.31 (F4)
+        _wearSuspect        = false;   // v5.31 (F4)
         state_dirty = true;
     }
 
@@ -1358,16 +1816,224 @@ public:
     bool  isSoCRaw() { return data->soc_is_raw; }
     bool  isSoCKnown() { return phase != PHASE_BOOTSTRAP; }
 
-    float getEffectiveCapacity() {
+    float getEffectiveCapacity() const {
         if (kalman->initialized && kalman->C_hat > 1.0f) return kalman->C_hat;
+        // v2.0.0 — REPLI SUR LA CAPACITÉ INDÉPENDANTE.
+        // Depuis que les segments ancrés sur une hypothèse peuvent être rejetés,
+        // `C_hat` peut légitimement rester à 0 (aucune ancre mesurée n'a encore
+        // été rencontrée). Renvoyer 0 déclencherait la cascade §M documentée :
+        // intégration du courant SAUTÉE, `detectChargeState()` en repli à 100 Ah,
+        // FLOAT détecté jusqu'à 2 A, SoC forcé à 100 %. La capacité issue du
+        // modèle d'usure, bien qu'imparfaite, est une référence infiniment plus
+        // saine que zéro.
+        if (_capacityPrior > 1.0f) return _capacityPrior;
         if (model->getNominalCapacity() > 0.0f) return model->getNominalCapacity();
         return 0.0f;
     }
 
+    /**
+     * @brief Active la loi de Peukert sur la CONVERSION Ah→SoC (v2.1.0, F-03).
+     *
+     * @param n       exposant de Peukert (> 1 = actif ; ≤ 1 désactive)
+     * @param iref_A  courant de référence (A) ≈ C/20
+     * @param tau_s   constante de temps du lissage du courant (s)
+     *
+     * ⚠️ N'affecte QUE le diviseur `dAh/C`. Le compteur de coulombs reste
+     * BRUT et `η` reste la seule pondération du courant (cf. CoulombFct).
+     */
+    void setSoCPeukert(float n, float iref_A, float tau_s = 300.0f) {
+        if (!isfinite(n) || n < 1.0f || n > 2.0f) { _peukertOn = false; return; }
+        if (!isfinite(iref_A) || iref_A <= 0.0f) { _peukertOn = false; return; }
+        _peukertN = n;
+        _peukertIref = iref_A;
+        // ⚠️ > 0.0f et non > 1.0f : un tau de 1,0 s (tests hote) etait REJETE
+        // silencieusement, la valeur restant a 300 s -> EMA 300x trop lente.
+        if (isfinite(tau_s) && tau_s > 0.0f) _peukertTau = tau_s;
+        _peukertOn = (n > 1.0f);
+        // N17 — on ne ré-amorce PAS le régime depuis le courant instantané : à
+        // l'application d'une configuration, ce courant est souvent une CHARGE,
+        // qui polluerait le régime pour tout le cycle. Le régime sera ré-amorcé
+        // à la première décharge réelle (front montant).
+        _peukertIema     = 0.0f;
+        _peukertIemaInit = false;
+        _peukertWasDis   = false;
+        // N22 — `_peukertRatioInit` n'est remis à zéro QUE si l'on désactive :
+        // sinon, ré-appliquer la configuration (clic « appliquer ») faisait
+        // sauter le ratio publié de 0,58 à 1,47 en un échantillon, soit 11,5 Ah
+        // d'un coup sur `Ah`, `aut_h` et `c_soc`. Au boot le drapeau est déjà
+        // faux (constructeur), donc l'amorçage initial reste inchangé.
+        if (!_peukertOn) {
+            _peukertCRatio    = 1.0f;
+            _peukertRatioInit = false;
+        }
+    }
+    bool  isSoCPeukertOn() const { return _peukertOn; }
+    float getSoCPeukertRatio() const { return _peukertCRatio; }
+
+    /**
+     * @brief Capacité de conversion au régime COURANT, sans muter l'état.
+     *
+     *     C_soc = getEffectiveCapacity() × _peukertCRatio
+     *
+     * ⚠️ v5.39 (A1) — POURQUOI CET ACCESSEUR EXISTE.
+     * `getSoCCapacity()` fait avancer l'EMA de courant : l'appeler deux fois par
+     * cycle (une pour le compteur coulomb, une pour l'EKF) diviserait sa
+     * constante de temps par deux. Cet accesseur est donc **const** : il relit
+     * le dernier ratio calculé et ne touche à rien.
+     *
+     * Il sert à ce que les DEUX estimateurs de SoC du firmware divisent les Ah
+     * par la MÊME capacité. Sans lui, l'EKF recevait `getEffectiveCapacity()`
+     * (C_hat, sans ratio) alors que le compteur divisait par C_hat×ratio : à
+     * 0,56 A les deux intégrateurs consommaient 26,07 Ah contre 36,5 Ah, soit
+     * 1,10 pt de SoC par Ah déchargé d'écart cumulé.
+     */
+    float getSoCCapacityAtCurrentRegime() const {
+        float C = getEffectiveCapacity();
+        if (C <= 0.0f) return C;
+        float r = _peukertCRatio;
+        if (!isfinite(r) || r <= 0.0f) r = 1.0f;
+        return C * r;
+    }
+
+    /**
+     * @brief Capacité utilisée pour convertir les Ah en SoC, à ce régime.
+     *
+     *     ratio_cible = (I_ref / |I|_régime)^(n−1)     borné ×2, DÉCHARGE
+     *     ratio       = EMA(ratio_cible)               τ = 60 s
+     *     C_soc       = C_ref · ratio
+     *
+     * DEUX grandeurs seulement :
+     *   • le RÉGIME — `|I|` lissé (τ = `_peukertTau`, 300 s) **pendant la
+     *     décharge uniquement**, ré-amorcé sur le front montant. Une décharge
+     *     interrompue puis reprise repart donc du courant RÉEL, pas de l'ancien.
+     *   • le RATIO PUBLIÉ — EMA de la cible (τ = 60 s). C'est ce qui garantit
+     *     qu'aucun échantillon ne porte de saut (`Ah`, `aut_h`, `peuk_ratio`,
+     *     `c_soc`).
+     * Hors décharge (charge, repos, courant sous le plancher d'identifiabilité)
+     * la cible vaut 1,0 : c'est `η` qui porte les pertes en charge, et une
+     * décharge de quelques dizaines de mA ne relève pas de la loi de Peukert.
+     * L'état « en décharge » a une HYSTÉRÉSIS (entrée `−I_ACTIVE`, sortie
+     * `+I_NOISE` ou régime effondré) : une porte instantanée faisait converger
+     * le ratio vers la moyenne de deux cibles, valeur qu'aucun régime ne produit.
+     *
+     * ⚠️ COÛT DU LISSAGE, mesuré : un pic de 0,5 → 5 A de 180 s laisse le SoC
+     * 0,79 pt trop haut (dont ~0,18 pt imputables au seul lissage du ratio,
+     * compensé à −0,04 pt au retour ⇒ ≈ 0,14 pt de dérive nette par cycle).
+     * C'est le prix de la continuité : sans elle, « Ah disponibles » sautait de
+     * 19,1 à 7,6 Ah en 100 ms. τ = 60 s est le compromis retenu.
+     *
+     * @param I courant (A), signé — la correction ne s'applique qu'en décharge
+     * @param dt_s intervalle (s) — pour un lissage indépendant de la cadence
+     */
+    float getSoCCapacity(float I, float dt_s = 0.1f) {
+        float C = getEffectiveCapacity();
+        if (C <= 0.0f) return C;
+        if (!_peukertOn || !(_peukertN > 1.0f)) { _peukertCRatio = 1.0f; return C; }
+
+        // N17 — sur entrée NON FINIE on ne touche à RIEN et on renvoie
+        // `C × ratio` : les deux consommateurs (compteur et accesseur `const`)
+        // restent donc alignés ET la valeur publiée reste continue. Remettre le
+        // ratio à 1 puis le ré-amorcer produisait DEUX discontinuités publiées
+        // (−29 % puis +40 %) pour un simple glitch I²C.
+        if (!isfinite(I)) return C * _peukertCRatio;
+
+        const float RATIO_MAX = 2.0f;    // plafond physique (idem AhFct)
+        const float dt = (isfinite(dt_s) && dt_s > 0.0f) ? dt_s : 0.1f;
+
+        // ── 1. État « en décharge » — HYSTÉRÉSIS, pas porte binaire ────────
+        // ⚠️ v5.41 (N21) — POURQUOI UN ÉTAT ET NON UN TEST PAR ÉCHANTILLON.
+        // Avec une porte instantanée, un courant qui oscille autour du seuil
+        // (0,151 / 0,149 A) fait alterner la cible entre 1,0 et 2,0 : l'EMA du
+        // ratio converge alors vers leur MOYENNE (1,50), valeur qu'AUCUN régime
+        // ne produit. Mesure : C_soc 39,12 Ah au lieu de 52,14 Ah (−25 %), SoC
+        // 33 % trop rapide, +2,3 pt de SoC par 24 h. Le ratio restait parfaite-
+        // ment lisse : défaut d'EXACTITUDE, pas de continuité.
+        // Deux seuils distincts :
+        //   • ENTRÉE  : `I < −I_ACTIVE`  → une décharge réelle commence ;
+        //   • SORTIE  : `I > −I_NOISE`   → repos ou charge (le courant cesse
+        //                                    d'être franchement négatif) ;
+        //   • SORTIE  : `_peukertIema < 0,8 × I_ACTIVE` → le régime s'est effondré.
+        const float aI = fabsf(I);
+        if (!_peukertWasDis) {
+            if (I < -_peukertIActive) {
+                _peukertWasDis = true;                 // front montant
+                _peukertIema     = aI;                 // ré-amorçage (N15)
+                _peukertIemaInit = true;
+            }
+        } else if (I > -_peukertINoise || _peukertIema < 0.8f * _peukertIActive) {
+            // Sortie dès que le courant n'est plus franchement négatif (repos ou
+            // charge), ou que le régime s'est effondré. ⚠️ `I > -I_NOISE` et non
+            // `I > +I_NOISE` : au repos le courant vaut ≈ 0, il doit faire SORTIR
+            // de l'état (sinon l'amplitude continuait de se dégrader pendant
+            // l'inactivité et le régime de reprise restait pollué).
+            _peukertWasDis = false;
+        }
+
+        // ── 2. Régime : |I| lissé pendant l'état « en décharge » ───────────
+        float target = 1.0f;
+        if (_peukertWasDis) {
+            if (!_peukertIemaInit) { _peukertIema = aI; _peukertIemaInit = true; }
+            else {
+                float aMag = 1.0f - expf(-dt / _peukertTau);
+                if (!isfinite(aMag) || aMag <= 0.0f) aMag = 1e-4f;
+                if (aMag > 1.0f) aMag = 1.0f;
+                _peukertIema += aMag * (aI - _peukertIema);
+            }
+            // ⚠️ v5.39 (A2) — Peukert est une loi de DÉCHARGE (Wikipedia
+            // « Peukert's law », « Lead–acid battery »). En charge, c'est le
+            // rendement η (CoulombFct) qui porte les pertes : un ratio < 1 en
+            // plus (0,747 à +2,7 A) gonflait la pente du SoC de 34 %.
+            float r = powf(_peukertIref / _peukertIema, _peukertN - 1.0f);
+            if (isfinite(r) && r > 0.0f) target = (r > RATIO_MAX) ? RATIO_MAX : r;
+        }
+
+        // ── 3. Ratio PUBLIÉ : toujours lissé, donc toujours continu ────────
+        float aRat = 1.0f - expf(-dt / PEUKERT_RATIO_TAU_S);
+        if (!isfinite(aRat) || aRat <= 0.0f) aRat = 1e-4f;
+        if (aRat > 1.0f) aRat = 1.0f;
+        if (!_peukertRatioInit) {
+            _peukertCRatio    = target;
+            _peukertRatioInit = true;
+        } else {
+            _peukertCRatio += aRat * (target - _peukertCRatio);
+        }
+
+        if (!isfinite(_peukertCRatio) || _peukertCRatio <= 0.0f) _peukertCRatio = 1.0f;
+        return C * _peukertCRatio;
+    }
+
+    /**
+     * @brief Règle les seuils du régime de décharge (A).
+     * @param i_active_A en dessous, pas de correction Peukert (loi non identifiable)
+     * @param i_noise_A  seuil de bruit de mesure (INA226)
+     */
+    void setSoCPeukertThresholds(float i_active_A, float i_noise_A) {
+        if (isfinite(i_active_A) && i_active_A > 0.0f) _peukertIActive = i_active_A;
+        if (isfinite(i_noise_A)  && i_noise_A  > 0.0f) _peukertINoise  = i_noise_A;
+    }
+
+    /**
+     * @brief Origine de la capacité effectivement utilisée (diagnostic).
+     * @return 2 = apprise (C_hat), 1 = indépendante (usure), 0 = saisie, -1 = aucune
+     *
+     * Sert à distinguer « capacité apprise » de « capacité supposée » dans l'UI :
+     * les deux alimentent le même calcul de SoC, mais n'ont pas la même valeur.
+     */
+    int8_t getCapacitySource() {
+        if (kalman->initialized && kalman->C_hat > 1.0f) return 2;
+        if (_capacityPrior > 1.0f) return 1;
+        if (model->getNominalCapacity() > 0.0f) return 0;
+        return -1;
+    }
+
     float getAhAvailable() {
+        // v5.39 (A4) — la capacité au RÉGIME COURANT, pas la capacité brute :
+        // le SoC affiché a été calculé en divisant par C_eff×ratio, donc
+        // SoC×C_eff sous-estimait l'énergie réellement restituable (à 0,56 A et
+        // SoC 50 % : 13,0 Ah annoncés contre 18,3 Ah disponibles).
         float C = getEffectiveCapacity();
         if (C <= 0.0f || phase == PHASE_BOOTSTRAP) return -1.0f;
-        return (data->SoC_fused / 100.0f) * C;
+        return (data->SoC_fused / 100.0f) * getSoCCapacityAtCurrentRegime();
     }
 
     float getAhIntegrated() {
@@ -1411,6 +2077,110 @@ public:
     float getKalmanP_CC() { return kalman->P[0][0]; }
     float getKalmanP_aging() { return kalman->P[1][1]; }
     uint16_t getKalmanUpdates() { return kalman->n_updates; }
+
+    // ============================================================
+    // v2.0.0 — QUALITÉ DES SEGMENTS (observabilité + réglage)
+    // ============================================================
+    /**
+     * @brief Score de qualité du dernier segment évalué.
+     * @return [0 ; 1] — 0 si le dernier segment a été rejeté sur un critère dur.
+     *         ⚠️ Ce n'est PAS le score complet de `SegmentValidator` : la
+     *         librairie ne connaît que le facteur d'ancre. L'appelant peut
+     *         écraser la valeur via setSegmentQuality().
+     */
+    float getLastSegmentQuality() const { return _segQ.score; }
+
+    /** @brief Détail des 5 facteurs du dernier segment évalué. */
+    const SegmentQuality& getLastSegmentQualityDetail() const { return _segQ; }
+
+    /** @brief Motif du dernier rejet (SegReject, 0 = OK). */
+    uint8_t getLastSegmentReason() const { return _segReason; }
+
+    /** @brief Nombre de segments rejetés depuis le démarrage. */
+    uint16_t getSegmentRejected() const { return _segRejected; }
+
+    /** @brief Nombre de segments acceptés depuis le démarrage. */
+    uint16_t getSegmentAccepted() const { return _segAccepted; }
+
+    /** @brief Nature de l'ancre qui a fermé le dernier segment (AnchorKind). */
+    uint8_t getLastAnchorKind() const { return _lastAnchor; }
+
+    /** @brief Nature de l'ancre qui a fermé le dernier segment, en clair. */
+    const char* getLastAnchorKindStr() const { return anchorKindStr(_lastAnchor); }
+
+    /**
+     * @brief `C_hat` a-t-il été initialisé sur une ancre HYPOTHÉTIQUE ?
+     *
+     * Si oui, la valeur publiée repose sur la supposition « FLOAT = 100 % » et
+     * n'a encore jamais été confrontée à une ancre mesurée. À afficher : c'est
+     * la différence entre « capacité apprise » et « capacité supposée ».
+     */
+    bool wasInitFromHypothesis() const { return _initFromHypothesis; }
+
+    /**
+     * @brief Une ancre MESURÉE a-t-elle contredit la capacité indépendante ?
+     *
+     * Signifie que le modèle d'usure (`BatteryLifePredictor`) est faux, pas la
+     * mesure. À lever manuellement après vérification (setWearSuspect(false)).
+     */
+    bool isWearSuspect() const { return _wearSuspect; }
+    void setWearSuspect(bool s) { _wearSuspect = s; }
+
+    /**
+     * @brief Déclare la capacité INDÉPENDANTE de référence (modèle d'usure).
+     *
+     * Sert à deux choses, et les deux exigent une source indépendante de
+     * `C_hat` — sinon la garde se contenterait de comparer `C_hat` à lui-même :
+     *   1. échelle de `σ_C` dans `anchorCapacityVariance()` (via `C_ref`) ;
+     *   2. garde croisée `crossGuard()`.
+     *
+     * @param ah        Capacité de référence (Ah) ; <= 0 désactive les deux
+     * @param tolRel    Tolérance de la garde croisée (0,40 = 40 %) ;
+     *                  <= 0 désactive la garde
+     */
+    void setCapacityPrior(float ah, float tolRel = SEG_CROSS_GUARD_REL) {
+        _capacityPrior = (isfinite(ah) && ah > 0.0f) ? ah : 0.0f;
+        _crossGuardRel = (isfinite(tolRel) && tolRel > 0.0f) ? tolRel : 0.0f;
+    }
+    float getCapacityPrior() const { return _capacityPrior; }
+
+    /**
+     * @brief La garde croisée est-elle RÉELLEMENT active ?
+     *
+     * ⚠️ v5.31 (F6.2) — sans ce drapeau, deux situations très différentes se
+     * ressemblaient : « référence absente » (`_capacityPrior == 0`, l'appelant
+     * n'a rien fourni) et « garde désactivée » (`_crossGuardRel == 0`, seuil
+     * mis à zéro volontairement). Dans les deux cas `crossGuard()` renvoie
+     * `GUARD_OK` sans rien comparer — donc un segment faux est accepté en
+     * silence. `priorValid` rend cet état observable.
+     */
+    bool isPriorValid() const { return _capacityPrior > 1.0f && _crossGuardRel > 0.0f; }
+
+    /** @brief Tolérance relative de la garde croisée (0 = désactivée). */
+    float getCrossGuardRel() const { return _crossGuardRel; }
+
+    /**
+     * @brief Remplace les seuils de qualité des segments.
+     *
+     * Les défauts viennent de `SegmentValidator::defaultLimits()`. Un projet
+     * dont le capteur est plus bruité peut relâcher `v_noise_max_mV` sans
+     * toucher au code de la librairie.
+     */
+    void setSegmentLimits(const SegmentValidator::Limits& lim) { _segLimits = lim; }
+    const SegmentValidator::Limits& getSegmentLimits() const { return _segLimits; }
+
+    /** @brief Seuil de score sous lequel un segment est rejeté. */
+    void setQualityMin(float q) {
+        _segLimits.score_min = (isfinite(q) && q >= 0.0f) ? q : SEG_QUALITY_MIN;
+    }
+    float getQualityMin() const { return _segLimits.score_min; }
+
+    /** @brief Paramètres de qualité du segment EN COURS (diagnostic). */
+    float getSegmentVNoise_mV() const { return seg.dV_ema * 1000.0f; }
+    float getSegmentINoise_A() const { return seg.dI_ema; }
+    float getSegmentTDrift_C() const { return fabsf(seg.T_last - seg.T_start); }
+    /** @brief dSoC du dernier segment FERMÉ (%), accepté ou rejeté. */
+    float getSegmentDSoC() const { return _lastDSoC; }
     float getR_estimated() { return kalman->R_estimated; }
     float getR_measured() { return kalman->R_measured; }
     float getAlphaFused() { return alpha_fused; }
@@ -1568,8 +2338,21 @@ public:
     // ============================================================
     // Ajoute un point (dSoC%, dAh) à l'anneau. Un point n'est retenu que si
     // dSoC >= REG_MIN_DSOC (sinon l'erreur relative explose).
+    //
+    // ⚠️ v5.35 (F-23) — LE GARDE NE FILTRAIT PAS NaN.
+    // `if (dSoC < REG_MIN_DSOC || dAh <= 0.0f) return;` : les DEUX comparaisons
+    // sont FAUSSES quand l'opérande est NaN (IEEE 754 : tout ordre avec NaN est
+    // faux), donc un point NaN était ACCEPTÉ. Il polluait ensuite
+    // `getRegressionCapacity()` et `getRegressionDispersion()` pour toujours
+    // (NaN + x = NaN), et était réécrit tel quel en FRAM à chaque sauvegarde.
+    // C'est le MÊME motif que F-04 (`if (r.R_noise < 0.001f)` laissait passer
+    // NaN) et que F-02 (`if (!f)` sur un rename non testé) : une garde écrite
+    // en pensant « valeur hors plage » au lieu de « valeur invalide ».
+    // → `isfinite()` d'abord, comparaisons ensuite.
     void addRegressionPoint(float dSoC, float dAh) {
-        if (dSoC < REG_MIN_DSOC || dAh <= 0.0f) return;
+        if (!isfinite(dSoC) || !isfinite(dAh)) return;
+        if (dSoC < REG_MIN_DSOC || dSoC > 100.0f) return;
+        if (dAh <= 0.0f || dAh > 100000.0f) return;
         reg_dsoc[reg_head] = dSoC;
         reg_dah[reg_head] = dAh;
         reg_head = (uint8_t)((reg_head + 1) % REG_MAX_POINTS);
@@ -1579,15 +2362,29 @@ public:
     // Poids = dSoC² : la variance de C_i = dAh/(dSoC/100) est ∝ 1/dSoC², donc les
     // cycles PROFONDS (grand dSoC) dominent naturellement -> les décharges fortes
     // ponctuelles "recalent" l'estimation sans écraser l'historique.
+    //
+    // ⚠️ v5.35 (F-23) — `sxx > 0.0f` NE PROTÈGE PAS DE NaN.
+    // Le garde historique `return (sxx > 0.0f) ? (sxy / sxx * 100.0f) : 0.0f;`
+    // est INEFFICACE dans le cas précis qui s'est produit sur l'appareil : un
+    // seul `dAh` corrompu en NaN (4 octets à 0xFF dans la FRAM) rend `sxy` NaN
+    // alors que `sxx` reste FINI et POSITIF → le test passe, et la division
+    // renvoie NaN. Vérifié : dSoC={10,20,30}, dAh={7,2 ; NaN ; 10,8} →
+    // sxy=nan, sxx=980000, `sxx>0` vrai, résultat **nan**.
+    // C'est exactement le `"reg_C":-nan` publié le 21/10/2026.
+    // → on rejette tout point non fini AVANT de sommer, et on valide le résultat.
     float getRegressionCapacity() {
         if (reg_count < 2) return 0.0f;
         float sxy = 0.0f, sxx = 0.0f;
         for (uint8_t i = 0; i < reg_count; i++) {
+            if (!isfinite(reg_dsoc[i]) || !isfinite(reg_dah[i])) continue;
+            if (!(reg_dsoc[i] > 0.0f)) continue;
             float w = reg_dsoc[i] * reg_dsoc[i];
             sxy += w * reg_dsoc[i] * reg_dah[i];
             sxx += w * reg_dsoc[i] * reg_dsoc[i];
         }
-        return (sxx > 0.0f) ? (sxy / sxx * 100.0f) : 0.0f;
+        if (!(sxx > 0.0f) || !isfinite(sxx) || !isfinite(sxy)) return 0.0f;
+        float c = sxy / sxx * 100.0f;
+        return isfinite(c) ? c : 0.0f;
     }
     uint8_t getRegressionPoints() { return reg_count; }
     void    resetRegression() { reg_count = 0; reg_head = 0; }
@@ -1598,18 +2395,28 @@ public:
         return m;
     }
     // Dispersion : coefficient de variation (%) des capacités implicites C_i = dAh/(dSoC/100)
+    //
+    // ⚠️ v5.35 (F-23) — garde de sortie : `isfinite()` sur le RÉSULTAT.
+    // Même avec un ring assaini à l'entrée, une division peut produire inf/NaN
+    // (dSoC dénormalisé, dAh énorme). Un NaN publié dans `/api/kalman/status`
+    // casse le `JSON.parse` du client — même symptôme que F-04. On préfère
+    // déclarer « inconnue » (-1) que publier une valeur non finie.
     float getRegressionDispersion() {
         if (reg_count < 3) return -1.0f;
         float sum = 0.0f;
-        for (uint8_t i = 0; i < reg_count; i++) sum += reg_dah[i] / (reg_dsoc[i] / 100.0f);
+        for (uint8_t i = 0; i < reg_count; i++) {
+            if (!(reg_dsoc[i] > 0.0f)) return -1.0f;
+            sum += reg_dah[i] / (reg_dsoc[i] / 100.0f);
+        }
         float mean = sum / reg_count;
-        if (mean <= 0.0f) return -1.0f;
+        if (!(mean > 0.0f) || !isfinite(mean)) return -1.0f;
         float s2 = 0.0f;
         for (uint8_t i = 0; i < reg_count; i++) {
             float ci = reg_dah[i] / (reg_dsoc[i] / 100.0f);
             s2 += (ci - mean) * (ci - mean);
         }
-        return sqrtf(s2 / reg_count) / mean * 100.0f;
+        float d = sqrtf(s2 / reg_count) / mean * 100.0f;
+        return isfinite(d) ? d : -1.0f;
     }
 
     // ============================================================

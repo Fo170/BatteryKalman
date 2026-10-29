@@ -166,6 +166,28 @@ battery.applyRecommendedRestLong();
 
 ## 🧩 Dépendances & matériel
 
+### ⚠️ Installation des librairies compagnes (v2.4.0)
+
+BatteryKalman **n'est pas seul** : il inclut `BatteryModels.h`, `CoulombsAh.h` et
+son propre `SegmentValidator.h`. Ces librairies **ne sont pas au registre
+PlatformIO**, donc PlatformIO **ne peut pas les résoudre automatiquement** —
+`library.json` déclare volontairement `"dependencies": {}` (une déclaration
+`"Fo170/BatteryModels": ">=2.0.0"` échouait avec `UnknownPackageError`, ce qui
+rendait la librairie inutilisable en l'état).
+
+Il faut donc les lister **explicitement** dans le `platformio.ini` du projet :
+
+```ini
+lib_deps =
+    https://github.com/Fo170/BatteryModels.git#v2.3.0
+    https://github.com/Fo170/CoulombsAh.git#v3.1.0
+    https://github.com/Fo170/BatteryKalman.git#v2.4.0
+```
+
+Sous **Arduino IDE** : copier les trois dossiers dans `libraries/`
+(la ligne `depends=` de `library.properties` a été retirée pour la même raison —
+elle ne peut pas être résolue).
+
 ### Interface `BatteryModel` (requise)
 
 BatteryKalman appelle ces méthodes sur votre objet `BatteryModel*` :
@@ -236,7 +258,7 @@ Nécessaire uniquement pour la persistance JSON de l'exemple `Exemples/avec_pers
 | `Coulomb not found` | CoulombsAh non installé | Installer [Fo170/CoulombsAh](https://github.com/Fo170/CoulombsAh) v1.1+ |
 | `out of memory` (Uno) | RAM insuffisante | Utiliser ESP32, ou réduire les buffers |
 
-## 📋 Caractéristiques (v1.7.4)
+## 📋 Caractéristiques (v2.4.0)
 
 ### Kalman Filter
 - **Extended Kalman Filter 2D** : Estime simultanément capacité + taux vieillissement

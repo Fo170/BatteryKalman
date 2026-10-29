@@ -1,7 +1,7 @@
 {
   "name": "BatteryKalman",
-  "version": "1.9.0",
-  "description": "Algorithme de filtrage de Kalman adaptatif multi-phases pour estimation de capacite et etat de charge de batteries. v1.7.3 : compteurs Ah reconcilies avec le SoC (Ah_total_charged/discharged derivent du dAh corrige par le rendement eta, au lieu de I brut + 0.98 code en dur) + getCoulombMeter() pour exposer le eta reellement applique. v1.7.2 : fusion SoC sans ponderation par la confiance (le coulomb est la reference). v1.7.1 : etat P1/P2 persistable. v1.7.0 : chasse aux bugs K1-K12/R1-R7 + observateur passif.",
+  "version": "2.4.0",
+  "description": "Algorithme de filtrage de Kalman adaptatif multi-phases pour l'estimation de la capacité et de l'état de charge des batteries. v2.0.0 : qualité des segments d'apprentissage — AnchorKind, incertitude d'ancre (1/2/5 pt de SoC), sigma_C = C_ref*u/dSoC, SegmentValidator (score = produit de 5 facteurs, seuil 0,50), garde croisée 40 % asymétrique. La fermeture sur FLOAT posait SoC_end = 100 % : une HYPOTHÈSE qui repartait dans C_hat, donc dans SoC_coulomb, donc dans la fermeture suivante (C_hat = 26,07 Ah au lieu de ~37,5). v2.1.0 : Peukert appliqué à la CONVERSION Ah->SoC (setSoCPeukert, getSoCCapacity), jamais à l'intégration — le compteur reste brut, eta reste la seule pondération du courant. v2.2.0 : Peukert RESTREINT À LA DÉCHARGE (fabsf(I) l'appliquait aussi en charge : ratio 0,747 à +2,7 A, soit +34 % de pente de SoC) ; getSoCCapacityAtCurrentRegime() const pour que SocEkf divise par la MÊME capacité que le compteur ; getAhAvailable() au régime courant. v2.3.0 : _peukertIema SIGNÉE + régime établi exigé (un seul échantillon à -1 mA ouvrait la porte avec une EMA encore à +2,7 A : ratio 0,747) ; ratio remis à 1 sur courant non fini. v2.4.0 : le ratio Peukert était une fonction DISCONTINUE d'un courant lissé — pic x2 pendant 2,2 min à chaque début de décharge et clignotement 1,0/2,0 au repos. Conception finale, volontairement minimale : un seul état de régime (|I| lissé pendant la décharge seulement, ré-amorcé sur le front montant) + le ratio PUBLIÉ lissé (tau = 60 s) + un plancher de régime (0,15 A, réglable par setSoCPeukertThresholds()).",
   "keywords": [
     "kalman",
     "battery",
@@ -36,8 +36,5 @@
     "atmelavr"
   ],
   "headers": "BatteryKalman.h",
-  "dependencies": {
-    "Fo170/BatteryModels": ">=1.6.9",
-    "Fo170/CoulombsAh": "^3.0.0"
-  }
+  "dependencies": {}
 }

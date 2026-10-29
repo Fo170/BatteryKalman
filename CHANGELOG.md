@@ -1,5 +1,126 @@
 # Changelog - BatteryKalman
 
+## [2.4.0] - 2026-10-24
+
+### 🐛 Corrigé — le ratio Peukert était une fonction DISCONTINUE
+
+Trois défauts successifs, tous sur la même mécanique : le ratio Peukert était
+calculé sur un courant **lissé**, avec un **seuil binaire**.
+
+| Défaut mesuré | Effet |
+|---|---|
+| Pic **×2 pendant 2,2 min** à chaque début de décharge | « Ah disponibles » = 49 Ah pour 26,07 Ah, `aut_h` doublé |
+| **Clignotement 1,0 / 2,0** au repos | +100 % |
+| Régime non ré-amorcé après un repos | décharge 5 A → repos → 0,5 A corrigée comme du 5 A : ratio **0,69 au lieu de 1,47 pendant 24 min** (−53 %) |
+
+### Conception finale, volontairement minimale
+
+1. **Un seul état de régime** : `|I|` lissé **pendant la décharge seulement**,
+   **ré-amorcé sur le front montant** — sans quoi une décharge de 5 A suivie
+   d'un repos laissait le régime à 5 A ;
+2. **le ratio publié est lissé** (τ = 60 s) : la valeur affichée est donc
+   toujours continue, même quand la cible change ;
+3. **un plancher de régime** (0,15 A, réglable par
+   `setSoCPeukertThresholds()`) : en dessous, la loi n'est plus identifiable et
+   la formule saturait déjà.
+
+Sur courant **non fini**, on renvoie `C × ratio` **sans rien réinitialiser** :
+un glitch I²C produisait sinon **deux** discontinuités publiées (−29 % puis
++40 %).
+
+### ✅ Mesures après correctif
+
+- Transition sans pic (ratio max = cible) ;
+- repos : 1,4006 → 1,0000 en 10 min, **0 inversion**, pas max 0,07 % ;
+- reprise après repos : cible atteinte en **< 2 min**.
+
+`AC-37` / `AC-38` couvrent ces propriétés.
+
+---
+
+## [2.3.0] - 2026-10-24
+
+### 🐛 Corrigé — la porte de signe était instantanée, l'amplitude lissée
+
+`_peukertIema` devient **SIGNÉE** et la correction exige un **régime établi**
+(courant instantané négatif **et** courant lissé négatif).
+
+Avant, un **seul échantillon à −1 mA** en fin de charge ouvrait la porte avec
+une EMA encore à **+2,7 A** : ratio 0,747 → « Ah disponibles » de 13,0 à 9,7 Ah
+en **100 ms**, puis retour à 18,3 Ah sur 20 min.
+
+Le ratio est en outre remis à 1 sur courant **non fini** : l'ancien `return C`
+laissait `_peukertCRatio` périmé, donc `getSoCCapacityAtCurrentRegime()`
+renvoyait l'ancien ratio et l'écart A1 (40 %) revenait silencieusement.
+
+---
+
+## [2.2.0] - 2026-10-24
+
+### 🐛 Corrigé — Peukert s'appliquait aussi en CHARGE
+
+`fabsf(I)` appliquait la loi dans les deux sens : à **+2,7 A** le ratio tombait
+à 0,747, soit **+34 % de pente de SoC**, en plus de η. Les deux sources de
+référence définissent Peukert **pour la décharge**.
+
+L'EMA de courant continue d'être alimentée en charge.
+
+### 🐛 Corrigé — `SocEkf` divisait par une autre capacité que le compteur
+
+`getSoCCapacityAtCurrentRegime()` devient **const** : elle relit le dernier
+ratio **sans faire avancer l'EMA**, pour que `SocEkf` divise par la **même**
+capacité que le compteur. Avant : 26,07 Ah contre 36,5 Ah à 0,56 A, soit
+1,10 point de SoC par Ah d'écart.
+
+`getAhAvailable()` utilise la capacité au régime courant (13,0 Ah annoncés
+contre 18,3 restituables). `getEffectiveCapacity()` devient `const`.
+
+---
+
+## [2.1.0] - 2026-10-24
+
+### 🐛 Corrigé — Peukert appliqué au mauvais endroit
+
+Peukert est appliqué à la **CONVERSION Ah→SoC** (`setSoCPeukert`,
+`getSoCCapacity`), **jamais à l'intégration**. Le compteur reste brut ; η reste
+la seule pondération du courant.
+
+Défaut corrigé : à 0,56 A de décharge nocturne, le SoC descendait **40 % trop
+vite** et l'ancre FLOAT le remettait à 100 % chaque matin.
+
+---
+
+## [2.0.0] - 2026-10-20
+
+### 💥 Refonte — qualité des segments d'apprentissage de capacité
+
+`C_hat` est appris en fermant des **segments** entre deux ancres de SoC :
+
+```
+C_measured = dAh / (dSoC / 100)
+```
+
+Le problème était dans le choix de l'ancre de fin : sur FLOAT, le code posait
+`SoC_end = 100 %` — une **hypothèse**, pas une mesure. Elle repartait dans
+`C_hat`, donc dans `SoC_coulomb`, donc dans la fermeture suivante : **boucle
+fermée sur sa propre erreur** (`C_hat = 26,07 Ah` au lieu de ≈ 37,5).
+
+### ✨ Ajouts
+
+| Élément | Rôle |
+|---|---|
+| `AnchorKind` | Nature de l'ancre (OCV mesuré, pseudo-repos, hypothèse) |
+| Incertitude d'ancre | 1 / 2 / 5 points de SoC selon la nature |
+| `σ_C = C_ref · u / dSoC` | Incertitude propagée sur la capacité |
+| `SegmentValidator` (nouveau fichier) | Score = produit de 5 facteurs, seuil 0,50 |
+| Garde croisée 40 % asymétrique | Rejette un segment incohérent avec `C_hat` |
+
+### ✅ Résultat
+
+`C_hat` converge à **36,19 Ah (−3,5 %)** sur batterie simulée.
+
+---
+
 ## [1.9.0] - 2026-10-19
 
 ### 💥 BREAKING — compteur `Ah_GD` et pas de temps explicite
